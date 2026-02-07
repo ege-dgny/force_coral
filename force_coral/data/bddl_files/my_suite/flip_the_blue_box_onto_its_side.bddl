@@ -1,0 +1,33 @@
+(define (problem my_floor_manipulation)
+  (:domain robosuite)
+  (:language Flip the blue box onto its side)
+
+  (:regions
+    (box_region
+      (:target floor)
+      (:ranges (
+        (0.0 -0.06 0.01 -0.05)
+      ))
+    )
+  )
+
+  (:fixtures
+    floor   - floor
+  )
+
+  (:objects
+    block_1 - textured_cube
+  )
+
+  (:obj_of_interest
+    block_1
+  )
+
+  (:init
+    (On block_1 floor_box_region)
+  )
+
+  (:goal
+    (And (OnSide block_1))
+  )
+)

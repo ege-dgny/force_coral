@@ -1,0 +1,6 @@
+[submodule "FoundationPose"]
+	path = FoundationPose
+	url = https://github.com/NVlabs/FoundationPose.git
+[submodule "LIBERO"]
+	path = LIBERO
+	url = https://github.com/Lifelong-Robot-Learning/LIBERO.git

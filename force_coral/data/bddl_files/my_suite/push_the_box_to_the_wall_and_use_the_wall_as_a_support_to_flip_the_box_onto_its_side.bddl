@@ -1,0 +1,44 @@
+(define (problem my_floor_manipulation_shifted_robot)
+  (:domain robosuite)
+  (:language Push the box to the wall and use the wall as a support to flip the box onto its side)
+
+  (:regions
+    (box_region
+      (:target floor)
+      (:ranges (
+        (0.0 -0.06 0.01 -0.05)
+      ))
+    )
+    ;; Fixed wall pose (deterministic at reset), reused from the push task
+    (wall_region
+      (:target floor)
+      ;; Small non-zero rectangle around the midpoint to avoid zero-size site
+      (:ranges (
+        (-0.1400001 0.20 -0.14 0.200001)
+      ))
+    )
+  )
+
+  (:fixtures
+    floor   - floor
+    wall2_1 - wall2
+  )
+
+  (:objects
+    block_1 - textured_cube
+  )
+
+  (:obj_of_interest
+    block_1
+  )
+
+  (:init
+    (On block_1 floor_box_region)
+    (On wall2_1 floor_wall_region)
+  )
+
+  ;; Goal: flipped onto side with recent wall support (latched at first flip)
+  (:goal
+    (And (OnSideWithRecentSupport block_1 wall2_1))
+  )
+)

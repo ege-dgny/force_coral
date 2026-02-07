@@ -1,0 +1,25 @@
+<mujoco model="textured_wall">
+  <asset>
+    <!-- Default texture; object class may overwrite this file path if provided -->
+    <texture file="textured_wall_FP_atlas.png" name="tex-textured-wall" type="2d" />
+    <material name="textured-wall" reflectance="0.0" shininess="0.0" specular="0.0"
+              texrepeat="1 1" texture="tex-textured-wall" texuniform="false" />
+    <!-- The OBJ is a unit cube in [-0.5,0.5]^3, so scale sets final dims.
+         Target full size: 0.90 x 0.04 x 1.00 (m) => scale="0.9 0.04 1.0" -->
+    <mesh file="textured_wall_FP_atlas.obj" name="textured_wall_vis" scale="0.9 0.04 0.60" />
+  </asset>
+  <worldbody>
+    <body>
+      <body name="object">
+        <!-- Visual mesh (no collisions) -->
+        <geom type="mesh" mesh="textured_wall_vis" material="textured-wall" conaffinity="0" contype="0" group="1" />
+        <!-- Collision proxy; final half-extents set here to match mesh scale (0.45, 0.02, 0.50) -->
+        <geom name="collision" type="box" size="0.45 0.02 0.30" friction="1.0 0.0 0.0" group="0" rgba="0.8 0.8 0.8 0.15" />
+      </body>
+      <!-- Helper sites; positions chosen to reflect the fixed size above -->
+      <site rgba="0 0 0 0" size="0.005" pos="0 0 -0.50" name="bottom_site"/>
+      <site rgba="0 0 0 0" size="0.005" pos="0 0 0.50" name="top_site"/>
+      <site rgba="0 0 0 0" size="0.005" pos="0.45 0.02 0" name="horizontal_radius_site"/>
+    </body>
+  </worldbody>
+</mujoco>

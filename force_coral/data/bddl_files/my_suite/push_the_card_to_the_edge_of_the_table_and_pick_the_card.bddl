@@ -1,0 +1,40 @@
+(define (problem my_tabletop_manipulation)
+  (:domain robosuite)
+  (:language Push the card to the edge of the table and pick the card)
+
+  (:regions
+    (card_region
+      (:target main_table)
+      (:ranges (
+        (0.04 -0.03 0.060000000000000005 -0.01)
+      ))
+    )
+    (front_edge_region
+      (:target main_table)
+      (:ranges (
+        (-0.09 0.16999999999999998 -0.010000000000000002 0.25)
+      ))
+    )
+  )
+
+  (:fixtures
+    main_table - table
+  )
+
+  (:objects
+    card_1 - card
+  )
+
+  (:obj_of_interest
+    card_1
+    main_table_front_edge_region
+  )
+
+  (:init
+    (On card_1 main_table_card_region)
+  )
+
+  (:goal
+    (And (On card_1 main_table_front_edge_region))
+  )
+)

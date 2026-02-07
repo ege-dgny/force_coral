@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="wall2">
+  <worldbody>
+    <body>
+      <body name="object" pos="0 0 0">
+        <body name="base" pos="0 0 0" quat="1 0 0 0">
+          <!-- collision geometry -->
+          <!-- default friction: friction="1 0.005 0.0001" -->
+          <geom name="obstacle" type="box"
+                size="0.45 0.02 0.50" pos="0.15 0.05 0.08"
+                rgba="0.3 0.3 0.3 0.9" group="0"
+                friction="0.5 0.0 0.0"/>
+          <!-- visual-only duplicate (no collisions) -->
+          <geom name="visual_obj" type="box"
+                size="0.45 0.02 0.50" pos="0.15 0.05 0.08"
+                rgba="0.3 0.3 0.3 0.9" group="1" conaffinity="0" contype="0"
+                friction="1 0.005 0.0001"/>
+        </body>
+      </body>
+
+      <!-- helper sites aligned to actual extents -->
+      <site name="bottom_site" pos="0 0 0.00" rgba="0 0 0 0" size="0.005"/>
+      <site name="top_site"    pos="0 0 0.16" rgba="0 0 0 0" size="0.005"/>
+      <site name="horizontal_radius_site" pos="0.15 0 0.08" rgba="0 0 0 0" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,138 @@
+{
+  "task": "push_the_card_to_the_edge_of_the_table_and_pick_the_card",
+  "num_states": 5,
+  "overrides_per_state": [
+    {
+      "card_1": {
+        "size": [
+          0.2,
+          0.1,
+          0.01
+        ],
+        "density": 5
+      }
+    },
+    {
+      "card_1": {
+        "size": [
+          0.2,
+          0.1,
+          0.01
+        ],
+        "density": 5
+      }
+    },
+    {
+      "card_1": {
+        "size": [
+          0.2,
+          0.1,
+          0.01
+        ],
+        "density": 5
+      }
+    },
+    {
+      "card_1": {
+        "size": [
+          0.2,
+          0.1,
+          0.01
+        ],
+        "density": 5
+      }
+    },
+    {
+      "card_1": {
+        "size": [
+          0.2,
+          0.1,
+          0.01
+        ],
+        "density": 5
+      }
+    }
+  ],
+  "placements": [
+    {
+      "xy": [
+        -0.08,
+        0.0
+      ],
+      "overrides": {
+        "card_1": {
+          "size": [
+            0.2,
+            0.1,
+            0.01
+          ],
+          "density": 5
+        }
+      }
+    },
+    {
+      "xy": [
+        -0.06,
+        0.0
+      ],
+      "overrides": {
+        "card_1": {
+          "size": [
+            0.2,
+            0.1,
+            0.01
+          ],
+          "density": 5
+        }
+      }
+    },
+    {
+      "xy": [
+        -0.06,
+        0.02
+      ],
+      "overrides": {
+        "card_1": {
+          "size": [
+            0.2,
+            0.1,
+            0.01
+          ],
+          "density": 5
+        }
+      }
+    },
+    {
+      "xy": [
+        -0.08,
+        0.02
+      ],
+      "overrides": {
+        "card_1": {
+          "size": [
+            0.2,
+            0.1,
+            0.01
+          ],
+          "density": 5
+        }
+      }
+    },
+    {
+      "xy": [
+        -0.08,
+        -0.02
+      ],
+      "overrides": {
+        "card_1": {
+          "size": [
+            0.2,
+            0.1,
+            0.01
+          ],
+          "density": 5
+        }
+      }
+    }
+  ]
+}
