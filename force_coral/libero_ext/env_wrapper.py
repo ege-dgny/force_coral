@@ -73,6 +73,31 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
         ret_seg[segmentation_image == 0] = -1.0
         return ret_seg
 
+    # ------------------------------------------------------------------
+    # FORTE: contact wrench access
+    # ------------------------------------------------------------------
+
+    def get_body_wrench(self, body_name: str) -> np.ndarray:
+        """Return the 6D external contact wrench on a body in world frame.
+
+        Uses MuJoCo's ``cfrc_ext`` which is computed automatically from the
+        contact solver — no sensor XML modifications required.
+
+        Parameters
+        ----------
+        body_name : str
+            MuJoCo body name (e.g. ``"block_1_main"``).
+
+        Returns
+        -------
+        np.ndarray, shape (6,)
+            Wrench in **[Fx, Fy, Fz, τx, τy, τz]** order (force-first).
+            MuJoCo stores ``cfrc_ext`` as [τ(3), F(3)]; we reorder here.
+        """
+        bid = self.env.sim.model.body_name2id(body_name)
+        cfrc = self.env.sim.data.cfrc_ext[bid]  # MuJoCo: [τx,τy,τz, Fx,Fy,Fz]
+        return np.concatenate([cfrc[3:6], cfrc[0:3]])  # → [F(3), τ(3)]
+
     def segmentation_to_rgb(self, seg_im, random_colors=False):
         seg_im = np.mod(seg_im, 256)
         if random_colors:

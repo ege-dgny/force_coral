@@ -1,3 +1,7 @@
+#pdf files
+*.pdf
+
+
 # Custom
 force_coral/my_runs/
 my_runs/
@@ -104,3 +108,12 @@ outputs/
 *.pkl
 *.npy
 *.npz
+
+#claude files
+.claude/
+CLAUDE.md
+forte_ideation_direction.md
+FORTE_PROGRESS.md
+FORTE_TO_BE_IMPLEMENTED.md
+Forte_validation.md
+

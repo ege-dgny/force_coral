@@ -56,3 +56,9 @@ def get_data_path(key: str) -> str:
 # @register_* decorators and manual dict updates.
 # ---------------------------------------------------------------------------
 import force_coral.libero_ext  # noqa: E402,F401
+
+# ---------------------------------------------------------------------------
+# FORTE modules (dynamics estimation, perception/VLM interface)
+# ---------------------------------------------------------------------------
+import force_coral.dynamics     # noqa: E402,F401
+import force_coral.perception   # noqa: E402,F401
