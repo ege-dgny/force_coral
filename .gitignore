@@ -99,6 +99,7 @@ runs/
 logs/
 checkpoints/
 outputs/
+RSS2026-CoRAL/
 
 # Large data files
 *.zip
@@ -116,4 +117,4 @@ forte_ideation_direction.md
 FORTE_PROGRESS.md
 FORTE_TO_BE_IMPLEMENTED.md
 Forte_validation.md
-
+AGENTS.md

@@ -1,23 +1,10 @@
-name: forte
+name: forte_phase1
 channels:
   - conda-forge
   - defaults
 dependencies:
   - python=3.10
-  - numpy>=1.24
-  - scipy>=1.10
   - pip
+  - ffmpeg
   - pip:
-    - torch>=2.0
-    - mujoco>=2.3
-    - robosuite>=1.4
-    - openai>=1.0
-    - python-dotenv
-    - Pillow
-    - trimesh
-    - opencv-python
-    - "imageio[ffmpeg]"
-    - matplotlib
-    - transformations
-    - pytest
-    - pytest-cov
+    - -r requirements-cpu.txt

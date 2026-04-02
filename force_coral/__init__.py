@@ -2,10 +2,10 @@
 force_coral -- Custom robotics experiments built on LIBERO + FoundationPose.
 
 Importing this package:
-1. Ensures LIBERO and the CoRAL workspace root are on sys.path.
-2. Registers all custom LIBERO extensions (benchmarks, problems, objects,
-   robots, predicates, regions) into LIBERO's plugin registries so that
-   environments can be constructed without modifying LIBERO source files.
+1. Ensures LIBERO and the workspace root are on sys.path.
+2. Exposes helper utilities and light-weight FORTE modules.
+3. Optionally bootstraps the heavy LIBERO / robosuite extension registry when
+   the robotics stack is available.
 """
 
 import os as _os
@@ -16,6 +16,26 @@ import sys as _sys
 # ---------------------------------------------------------------------------
 _THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
 _CORAL_ROOT = _os.path.dirname(_THIS_DIR)
+_CACHE_ROOT = _os.path.join("/tmp", "force_coral_runtime")
+
+
+def _ensure_runtime_cache_dirs() -> None:
+    """Point common runtime caches to writable locations.
+
+    This keeps matplotlib, numba, and related robotics dependencies importable
+    on machines where the default home-cache locations are not writable.
+    """
+    mpl_dir = _os.path.join(_CACHE_ROOT, "matplotlib")
+    numba_dir = _os.path.join(_CACHE_ROOT, "numba")
+    xdg_dir = _os.path.join(_CACHE_ROOT, "xdg_cache")
+    for path in (mpl_dir, numba_dir, xdg_dir):
+        _os.makedirs(path, exist_ok=True)
+    _os.environ.setdefault("MPLCONFIGDIR", mpl_dir)
+    _os.environ.setdefault("NUMBA_CACHE_DIR", numba_dir)
+    _os.environ.setdefault("XDG_CACHE_HOME", xdg_dir)
+
+
+_ensure_runtime_cache_dirs()
 
 # Ensure CoRAL root is importable (so ``import force_coral`` works from
 # anywhere, and scripts inside force_coral can do cross-module imports).
@@ -50,15 +70,33 @@ def get_data_path(key: str) -> str:
     return _paths[key]
 
 
-# ---------------------------------------------------------------------------
-# Register LIBERO extensions (objects, robots, predicates, regions,
-# problems, benchmarks).  Importing the sub-package triggers the
-# @register_* decorators and manual dict updates.
-# ---------------------------------------------------------------------------
-import force_coral.libero_ext  # noqa: E402,F401
+_LIBERO_BOOTSTRAPPED = False
+_LIBERO_BOOTSTRAP_ERROR = None
 
-# ---------------------------------------------------------------------------
-# FORTE modules (dynamics estimation, perception/VLM interface)
-# ---------------------------------------------------------------------------
-import force_coral.dynamics     # noqa: E402,F401
-import force_coral.perception   # noqa: E402,F401
+
+def bootstrap_libero_extensions(require: bool = False) -> bool:
+    """Import and register the LIBERO / robosuite extension stack."""
+    global _LIBERO_BOOTSTRAPPED, _LIBERO_BOOTSTRAP_ERROR
+    if _LIBERO_BOOTSTRAPPED:
+        return True
+    try:
+        import force_coral.libero_ext  # noqa: F401
+    except Exception as exc:  # pragma: no cover - robotics stack dependent
+        _LIBERO_BOOTSTRAP_ERROR = exc
+        if require:
+            raise
+        return False
+    _LIBERO_BOOTSTRAPPED = True
+    _LIBERO_BOOTSTRAP_ERROR = None
+    return True
+
+
+def has_libero_extensions() -> bool:
+    """Return whether the heavy robotics stack is currently available."""
+    return bootstrap_libero_extensions(require=False)
+
+
+# Try to preserve the previous "import force_coral bootstraps the robotics
+# registry" behavior without making light-weight unit tests fail when the heavy
+# stack is absent.
+bootstrap_libero_extensions(require=False)

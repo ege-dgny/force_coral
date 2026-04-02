@@ -1,0 +1,28 @@
+{
+  "task": "push_the_box_up_along_the_wall_while_maintaining_contact",
+  "num_states": 10,
+  "overrides_per_state": [
+    {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}},
+    {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}},
+    {"block_1": {"size": [0.06, 0.06, 0.06], "density": 140}},
+    {"block_1": {"size": [0.06, 0.06, 0.06], "density": 140}},
+    {"block_1": {"size": [0.10, 0.10, 0.10], "density": 140}},
+    {"block_1": {"size": [0.10, 0.10, 0.10], "density": 140}},
+    {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}},
+    {"block_1": {"size": [0.07, 0.07, 0.07], "density": 140}},
+    {"block_1": {"size": [0.09, 0.09, 0.09], "density": 140}},
+    {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}
+  ],
+  "placements": [
+    {"xy": [0.000, -0.055], "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+    {"xy": [0.010, -0.055], "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+    {"xy": [-0.010, -0.055], "overrides": {"block_1": {"size": [0.06, 0.06, 0.06], "density": 140}}},
+    {"xy": [0.020, -0.055], "overrides": {"block_1": {"size": [0.06, 0.06, 0.06], "density": 140}}},
+    {"xy": [-0.020, -0.055], "overrides": {"block_1": {"size": [0.10, 0.10, 0.10], "density": 140}}},
+    {"xy": [0.000, -0.052], "overrides": {"block_1": {"size": [0.10, 0.10, 0.10], "density": 140}}},
+    {"xy": [0.000, -0.058], "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+    {"xy": [0.015, -0.052], "overrides": {"block_1": {"size": [0.07, 0.07, 0.07], "density": 140}}},
+    {"xy": [-0.015, -0.052], "overrides": {"block_1": {"size": [0.09, 0.09, 0.09], "density": 140}}},
+    {"xy": [0.000, -0.060], "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}}
+  ]
+}

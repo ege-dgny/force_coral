@@ -86,6 +86,18 @@ TASK_POSITIONS: Dict[str, List[Placement]] = {
         {"xyz": [-0.015- 0.020, -0.052, 0.0801], "yaw": pi,"overrides": {"block_1": {"size": [0.09, 0.09, 0.09], "density": 100}}},
         {"xyz": [0.000- 0.020, -0.060, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 100}}},
     ],
+    "push_the_box_up_along_the_wall_while_maintaining_contact": [
+        {"xyz": [0.010 - 0.020, -0.035, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+        {"xyz": [0.010 - 0.020, -0.055, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+        {"xyz": [-0.010 - 0.020, -0.055, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.06, 0.06, 0.06], "density": 140}}},
+        {"xyz": [0.020 - 0.020, -0.055, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.06, 0.06, 0.06], "density": 140}}},
+        {"xyz": [-0.020 - 0.020, -0.055, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.10, 0.10, 0.10], "density": 140}}},
+        {"xyz": [0.000 - 0.020, -0.052, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.10, 0.10, 0.10], "density": 140}}},
+        {"xyz": [0.000 - 0.020, -0.058, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+        {"xyz": [0.015 - 0.020, -0.052, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.07, 0.07, 0.07], "density": 140}}},
+        {"xyz": [-0.015 - 0.020, -0.052, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.09, 0.09, 0.09], "density": 140}}},
+        {"xyz": [0.000 - 0.020, -0.060, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 140}}},
+    ],
     "flip_the_blue_box_onto_its_side": [
         # Reuse the same initial placements as the push-to-wall task
         {"xyz": [0.010 - 0.020, -0.035, 0.0801], "yaw": pi, "overrides": {"block_1": {"size": [0.08, 0.08, 0.08], "density": 100}}},

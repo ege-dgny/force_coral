@@ -21,6 +21,7 @@ import force_coral
 # ── Task list for my_suite ────────────────────────────────────────────────
 MY_SUITE_TASKS = [
     "push_the_blue_box_to_the_front_of_the_wall",
+    "push_the_box_up_along_the_wall_while_maintaining_contact",
     "flip_the_blue_box_onto_its_side",
     "push_the_box_to_the_wall_and_use_the_wall_as_a_support_to_flip_the_box_onto_its_side",
     "push_the_card_to_the_edge_of_the_table_and_pick_the_card",

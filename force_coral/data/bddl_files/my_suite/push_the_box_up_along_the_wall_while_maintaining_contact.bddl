@@ -1,0 +1,44 @@
+(define (problem my_floor_manipulation)
+  (:domain robosuite)
+  (:language Push the box up along the wall while maintaining contact)
+
+  (:regions
+    (box_region
+      (:target floor)
+      (:ranges (
+        (0.0 -0.06 0.01 -0.05)
+      ))
+    )
+    (wall_region
+      (:target floor)
+      (:ranges (
+        (-0.1400001 0.20 -0.14 0.200001)
+      ))
+    )
+  )
+
+  (:fixtures
+    floor   - floor
+    wall2_1 - wall2
+  )
+
+  (:objects
+    block_1 - textured_cube
+  )
+
+  (:obj_of_interest
+    block_1
+  )
+
+  (:init
+    (On block_1 floor_box_region)
+    (On wall2_1 floor_wall_region)
+  )
+
+  (:goal
+    (And
+      (InContact block_1 wall2_1)
+      (AboveHeight block_1)
+    )
+  )
+)

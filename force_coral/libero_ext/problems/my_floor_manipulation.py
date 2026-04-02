@@ -28,6 +28,7 @@ class My_Floor_Manipulation(BDDLBaseDomain):
         self._support_post_steps = kwargs.pop("support_post_steps", 10)
         # Orientation threshold for OnSide (deg -> cos threshold)
         self._onside_cos_thresh = np.cos(np.deg2rad(88.0))
+        self._lift_height_goal = kwargs.pop("lift_height_goal", 0.50)
         # Temporal support tracking state (initialized here, finalized after super init)
         self._control_step_counter = 0
         self._contact_hist = {}

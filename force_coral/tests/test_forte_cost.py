@@ -1,207 +1,172 @@
-"""
-Unit tests for FORTE cost function (ForteWrapper.state_cost).
-
-Tests the energy cost, barrier cost, and their composition without
-requiring a MuJoCo environment — we test the math directly.
-"""
+"""Tests for the Phase-1 FORTE cost structure."""
 
 import numpy as np
 import pytest
 
+from force_coral.controllers.task_geometry import compute_box_face_anchor, compute_wall_lift_task_cost
+from force_coral.dynamics.estimator import RiemannianStiffnessEstimator
 
-# ---------------------------------------------------------------------------
-# Isolated cost function (mirrors ForteWrapper.state_cost logic)
-# ---------------------------------------------------------------------------
 
-def compute_forte_cost(
-    delta_x: np.ndarray,
-    K: np.ndarray,
-    force_limit: float = 10.0,
-    lambda_E: float = 1.0,
-    rho: float = 100.0,
+def compute_phase1_cost(
+    *,
+    delta_task: np.ndarray,
+    stiffness: np.ndarray,
+    force_band: tuple[float, float] = (2.5, 12.0),
+    weights: dict | None = None,
     task_cost: float = 0.0,
 ) -> dict:
-    """Compute FORTE cost components from delta_x and K.
-
-    Returns dict with keys: task, energy, barrier, total.
-    """
-    # Energy cost
-    energy = lambda_E * float(delta_x @ K @ delta_x)
-
-    # Predicted force
-    F_pred = K @ delta_x
-    F_norm = np.linalg.norm(F_pred[:3])
-
-    # Barrier cost
-    barrier = rho * max(0.0, F_norm - force_limit) ** 2
-
-    total = task_cost + energy + barrier
+    weights = {
+        "energy": 0.5,
+        "force_upper": 50.0,
+        "force_lower": 25.0,
+        **(weights or {}),
+    }
+    predicted_force_task = stiffness @ delta_task
+    predicted_force_normal = float(predicted_force_task[0])
+    energy = float(weights["energy"]) * float(delta_task @ stiffness @ delta_task)
+    upper = float(weights["force_upper"]) * max(0.0, predicted_force_normal - force_band[1]) ** 2
+    lower = float(weights["force_lower"]) * max(0.0, force_band[0] - predicted_force_normal) ** 2
+    total = float(task_cost) + energy + upper + lower
     return {
-        "task": task_cost,
+        "task": float(task_cost),
         "energy": energy,
-        "barrier": barrier,
+        "force_upper": upper,
+        "force_lower": lower,
+        "predicted_force_normal": predicted_force_normal,
+        "predicted_force_task": predicted_force_task,
         "total": total,
-        "F_pred_norm": F_norm,
     }
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-class TestEnergyCost:
-    def test_energy_cost_directionality(self):
-        """Motion along stiff axis should cost much more than along soft axis."""
-        K = np.diag([1000.0, 10.0, 10.0, 0.1, 0.1, 0.1])
-
-        # Motion along x (stiff)
-        dx_x = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
-        cost_x = compute_forte_cost(dx_x, K, lambda_E=1.0, rho=0.0)
-
-        # Motion along y (soft)
-        dx_y = np.array([0.0, 0.1, 0.0, 0.0, 0.0, 0.0])
-        cost_y = compute_forte_cost(dx_y, K, lambda_E=1.0, rho=0.0)
-
-        # x direction should be 100x more expensive
-        assert cost_x["energy"] / cost_y["energy"] == pytest.approx(100.0, rel=1e-6)
-
-    def test_energy_cost_quadratic_in_displacement(self):
-        """Energy should scale quadratically with displacement."""
-        K = np.eye(6) * 100.0
-        dx1 = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
-        dx2 = np.array([0.2, 0.0, 0.0, 0.0, 0.0, 0.0])
-
-        c1 = compute_forte_cost(dx1, K, rho=0.0)
-        c2 = compute_forte_cost(dx2, K, rho=0.0)
-
-        # 2x displacement → 4x energy
-        assert c2["energy"] / c1["energy"] == pytest.approx(4.0, rel=1e-6)
-
-    def test_energy_cost_zero_displacement(self):
-        """Zero displacement → zero energy cost."""
-        K = np.eye(6) * 1000.0
-        dx = np.zeros(6)
-        cost = compute_forte_cost(dx, K)
-        assert cost["energy"] == 0.0
-
-    def test_energy_cost_lambda_scaling(self):
-        """Energy should scale linearly with lambda_E."""
-        K = np.eye(6) * 100.0
-        dx = np.array([0.1, 0.1, 0.0, 0.0, 0.0, 0.0])
-
-        c1 = compute_forte_cost(dx, K, lambda_E=1.0, rho=0.0)
-        c2 = compute_forte_cost(dx, K, lambda_E=3.0, rho=0.0)
-
-        assert c2["energy"] / c1["energy"] == pytest.approx(3.0, rel=1e-6)
-
-
-class TestBarrierCost:
-    def test_barrier_inactive_below_limit(self):
-        """When predicted force < limit, barrier cost should be 0."""
-        K = np.eye(6) * 10.0  # low stiffness
-        dx = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
-        # F_pred = 10.0 * 0.1 = 1.0 N, limit = 10.0 N
-        cost = compute_forte_cost(dx, K, force_limit=10.0, rho=100.0)
-        assert cost["barrier"] == 0.0
-        assert cost["F_pred_norm"] < 10.0
-
-    def test_barrier_active_above_limit(self):
-        """When predicted force > limit, barrier cost should be > 0."""
-        K = np.eye(6) * 1000.0  # high stiffness
-        dx = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
-        # F_pred = 1000 * 0.1 = 100 N, limit = 10 N
-        cost = compute_forte_cost(dx, K, force_limit=10.0, rho=100.0)
-        assert cost["barrier"] > 0.0
-        # Barrier = 100 * (100 - 10)^2 = 100 * 8100 = 810000
-        expected = 100.0 * (100.0 - 10.0) ** 2
-        assert cost["barrier"] == pytest.approx(expected, rel=1e-6)
-
-    def test_barrier_at_exact_limit(self):
-        """At exactly the force limit, barrier should be 0."""
-        K = np.eye(6) * 100.0
-        # dx such that F_pred_norm = force_limit exactly
-        # F = K @ dx = [100*dx, 0, 0, ...], need |F[:3]| = 10
-        # so 100 * dx = 10 → dx = 0.1
-        dx = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
-        cost = compute_forte_cost(dx, K, force_limit=10.0, rho=100.0)
-        assert cost["barrier"] == pytest.approx(0.0, abs=1e-10)
-
-    def test_barrier_quadratic_growth(self):
-        """Barrier should grow quadratically past the limit."""
-        K = np.eye(6) * 100.0
-        # F_pred = 100 * 0.2 = 20 N
-        dx1 = np.array([0.2, 0.0, 0.0, 0.0, 0.0, 0.0])
-        # F_pred = 100 * 0.3 = 30 N
-        dx2 = np.array([0.3, 0.0, 0.0, 0.0, 0.0, 0.0])
-
-        c1 = compute_forte_cost(dx1, K, force_limit=10.0, rho=1.0)
-        c2 = compute_forte_cost(dx2, K, force_limit=10.0, rho=1.0)
-
-        # c1: (20-10)^2 = 100, c2: (30-10)^2 = 400
-        assert c1["barrier"] == pytest.approx(100.0, rel=1e-6)
-        assert c2["barrier"] == pytest.approx(400.0, rel=1e-6)
-
-
-class TestCostComposition:
-    def test_total_is_sum_of_parts(self):
-        """Total cost should equal task + energy + barrier."""
-        K = np.eye(6) * 500.0
-        dx = np.array([0.05, 0.03, 0.01, 0.0, 0.0, 0.0])
-        cost = compute_forte_cost(
-            dx, K, force_limit=10.0, lambda_E=2.0, rho=50.0, task_cost=5.0
+class TestEnergyTerm:
+    def test_stiff_wall_normal_direction_costs_more(self):
+        stiffness = np.diag([1000.0, 20.0, 20.0])
+        normal_cost = compute_phase1_cost(
+            delta_task=np.array([0.1, 0.0, 0.0]),
+            stiffness=stiffness,
+            weights={"energy": 1.0, "force_upper": 0.0, "force_lower": 0.0},
         )
-        expected_total = cost["task"] + cost["energy"] + cost["barrier"]
-        assert cost["total"] == pytest.approx(expected_total, rel=1e-10)
+        upward_cost = compute_phase1_cost(
+            delta_task=np.array([0.0, 0.1, 0.0]),
+            stiffness=stiffness,
+            weights={"energy": 1.0, "force_upper": 0.0, "force_lower": 0.0},
+        )
+        assert normal_cost["energy"] / upward_cost["energy"] == pytest.approx(50.0)
 
-    def test_K_none_fallback(self):
-        """When K is None, only task cost should remain."""
-        # This tests the logic pattern, not ForteWrapper directly
-        task_cost = 3.14
-        # Simulate K=None behavior
-        total = task_cost  # no energy, no barrier
-        assert total == 3.14
-
-    def test_all_components_nonnegative(self):
-        """All cost components should be >= 0."""
-        rng = np.random.default_rng(42)
-        K = _random_spd(6, rng)
-        for _ in range(50):
-            dx = rng.standard_normal(6) * 0.1
-            cost = compute_forte_cost(
-                dx, K, force_limit=5.0, lambda_E=1.0, rho=10.0, task_cost=1.0
-            )
-            assert cost["energy"] >= 0.0
-            assert cost["barrier"] >= 0.0
-            assert cost["total"] >= 0.0
+    def test_energy_is_quadratic_in_displacement(self):
+        stiffness = np.diag([100.0, 50.0, 25.0])
+        small = compute_phase1_cost(
+            delta_task=np.array([0.05, 0.0, 0.0]),
+            stiffness=stiffness,
+            weights={"energy": 1.0, "force_upper": 0.0, "force_lower": 0.0},
+        )
+        large = compute_phase1_cost(
+            delta_task=np.array([0.10, 0.0, 0.0]),
+            stiffness=stiffness,
+            weights={"energy": 1.0, "force_upper": 0.0, "force_lower": 0.0},
+        )
+        assert large["energy"] / small["energy"] == pytest.approx(4.0)
 
 
-class TestEstimatorAndCostIntegration:
-    """Test that estimator output feeds correctly into cost function."""
+class TestForceBandTerms:
+    def test_upper_penalty_is_zero_in_band(self):
+        stiffness = np.diag([50.0, 10.0, 10.0])
+        cost = compute_phase1_cost(
+            delta_task=np.array([0.1, 0.0, 0.0]),
+            stiffness=stiffness,
+            force_band=(2.5, 12.0),
+        )
+        assert cost["predicted_force_normal"] == pytest.approx(5.0)
+        assert cost["force_upper"] == 0.0
+        assert cost["force_lower"] == 0.0
 
-    def test_estimator_K_in_cost(self):
-        from force_coral.dynamics.estimator import RiemannianStiffnessEstimator
+    def test_upper_penalty_activates_above_band(self):
+        stiffness = np.diag([200.0, 10.0, 10.0])
+        cost = compute_phase1_cost(
+            delta_task=np.array([0.1, 0.0, 0.0]),
+            stiffness=stiffness,
+            force_band=(2.5, 12.0),
+            weights={"force_upper": 2.0, "force_lower": 0.0, "energy": 0.0},
+        )
+        expected = 2.0 * (20.0 - 12.0) ** 2
+        assert cost["force_upper"] == pytest.approx(expected)
+        assert cost["force_lower"] == 0.0
 
-        est = RiemannianStiffnessEstimator.from_vlm_prior(
+    def test_lower_penalty_activates_below_band(self):
+        stiffness = np.diag([10.0, 10.0, 10.0])
+        cost = compute_phase1_cost(
+            delta_task=np.array([0.1, 0.0, 0.0]),
+            stiffness=stiffness,
+            force_band=(2.5, 12.0),
+            weights={"force_upper": 0.0, "force_lower": 4.0, "energy": 0.0},
+        )
+        expected = 4.0 * (2.5 - 1.0) ** 2
+        assert cost["force_lower"] == pytest.approx(expected)
+        assert cost["force_upper"] == 0.0
+
+
+class TestTotalCost:
+    def test_total_is_sum_of_terms(self):
+        stiffness = np.diag([100.0, 40.0, 10.0])
+        cost = compute_phase1_cost(
+            delta_task=np.array([0.06, 0.02, 0.0]),
+            stiffness=stiffness,
+            task_cost=3.5,
+        )
+        assert cost["total"] == pytest.approx(
+            cost["task"] + cost["energy"] + cost["force_upper"] + cost["force_lower"]
+        )
+
+    def test_estimator_output_feeds_cost(self):
+        estimator = RiemannianStiffnessEstimator.from_vlm_prior(
             {"x": "HIGH", "y": "LOW", "z": "MEDIUM"}
         )
+        rng = np.random.default_rng(4)
+        for _ in range(20):
+            delta = rng.standard_normal(3) * 0.01
+            force = rng.standard_normal(3) * 2.0
+            estimator.update(force, delta)
 
-        # Simulate some updates
-        rng = np.random.default_rng(99)
-        for _ in range(10):
-            F = rng.standard_normal(6) * 5.0
-            dx = rng.standard_normal(6) * 0.05
-            est.update(F, dx)
-
-        K = est.get_stiffness()
-        dx_test = np.array([0.05, 0.05, 0.05, 0.0, 0.0, 0.0])
-        cost = compute_forte_cost(dx_test, K, force_limit=10.0)
-
-        assert cost["energy"] > 0
-        assert cost["total"] >= cost["task"]
-        # K should still be SPD
-        assert np.all(np.linalg.eigvalsh(K) > 0)
+        stiffness = estimator.get_stiffness()
+        cost = compute_phase1_cost(
+            delta_task=np.array([0.03, 0.01, 0.0]),
+            stiffness=stiffness,
+            task_cost=1.0,
+        )
+        assert cost["energy"] >= 0.0
+        assert cost["total"] >= 1.0
+        assert np.all(np.linalg.eigvalsh(stiffness) > 0.0)
 
 
-def _random_spd(n: int, rng: np.random.Generator) -> np.ndarray:
-    A = rng.standard_normal((n, n))
-    return A @ A.T + np.eye(n)
+class TestObjectAwareGeometry:
+    def test_contact_anchor_targets_robot_facing_box_face(self):
+        box_pos = np.array([0.0, 0.0, 0.2])
+        box_rot = np.eye(3)
+        half_extents = np.array([0.04, 0.05, 0.06])
+        anchor = compute_box_face_anchor(
+            box_pos,
+            box_rot,
+            half_extents,
+            face_axis=1,
+            face_sign=-1.0,
+        )
+        assert np.allclose(anchor, np.array([0.0, -0.05, 0.2]))
+
+    def test_task_cost_activates_before_force(self):
+        weights = {"task_height": 14.0, "task_contact": 8.0, "task_pose": 18.0}
+        far = compute_wall_lift_task_cost(
+            box_top_height=0.08,
+            target_height=0.50,
+            wall_gap=0.10,
+            eef_to_contact_distance=0.25,
+            weights=weights,
+        )
+        near = compute_wall_lift_task_cost(
+            box_top_height=0.08,
+            target_height=0.50,
+            wall_gap=0.02,
+            eef_to_contact_distance=0.03,
+            weights=weights,
+        )
+        assert far["pose"] > near["pose"]
+        assert far["total"] > near["total"]

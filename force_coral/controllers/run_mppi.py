@@ -34,6 +34,10 @@ import force_coral
 
 from libero.libero import get_libero_path
 from libero.libero.benchmark import get_benchmark
+from force_coral.controllers.mppi_core import (
+    ParallelMPPI as SharedParallelMPPI,
+    build_inner_env as shared_build_inner_env,
+)
 from force_coral.libero_ext.env_wrapper import SegmentationRenderEnv
 from force_coral.libero_ext.init_loader import load_init_bundle_by_name
 
@@ -352,44 +356,20 @@ def build_inner_env(
     camera_heights: int = 512,
     camera_widths: int = 512,
 ):
-    """
-    Build an environment strictly from a saved initialization bundle.
-    Requires init_idx; raises if not provided.
-    """
     if init_idx is None:
         raise ValueError("init_idx must be provided for build_inner_env (no fallback path)")
-
-    # Use canonical BDDL path under LIBERO's bddl_files/<problem_folder>/
-    bddl_file = _canonical_bddl(problem_folder, task_name)
-
-    # Load overrides + init state, then construct env and set state
-    overrides, state = load_init_bundle_by_name(
-        problem_folder=problem_folder,
+    return shared_build_inner_env(
         task_name=task_name,
-        init_idx=init_idx,
-    )
-
-    env = SegmentationRenderEnv(
-        bddl_file_name=bddl_file,
-        robots=["Panda"],
         controller=controller,
-        has_renderer=gui,
-        has_offscreen_renderer=offscreen,
-        ignore_done=True,
+        offscreen=offscreen,
+        gui=gui,
+        init_idx=init_idx,
+        problem_folder=problem_folder,
         use_camera_obs=use_camera_obs,
-        control_freq=20,
-        camera_names=["frontview"],
+        camera_depths=camera_depths,
         camera_heights=camera_heights,
         camera_widths=camera_widths,
-        camera_depths=camera_depths,
-        camera_segmentations="instance",
-        **({"object_overrides": overrides} if overrides else {}),
     )
-    env.robots[0].controller_config["control_ori"] = True
-    env.seed(0)
-    env.reset()
-    env.set_init_state(state)
-    return env
 
 class SimpleWrapper:
     def __init__(self, env):
@@ -572,59 +552,26 @@ def _evaluate_one(args):
     # En sondaki cost'u döndürmek istersen total yerine avg/last seçebilirsin
     return total_cost
 
-class ParallelMPPI:
+class ParallelMPPI(SharedParallelMPPI):
     def __init__(self, env_wrapper,
                  horizon=10, num_samples=64, noise_scale=1.0,
                  controller="OSC_POSE", control_freq=20,
                  num_workers=None, seed=0,
                  init_idx=None, problem_folder="my_suite", task_name=None):
-        """
-        env_wrapper: gerçek (real) env'i saran senin SimpleWrapper'ının örneği.
-        task_name: worker env'lerin kuracağı görev adı (BDDL ismi ile aynı).
-        """
-        self.envw = env_wrapper
-        self.horizon = horizon
-        self.num_samples = num_samples
-        self.noise_scale = noise_scale
-        self.rng = np.random.default_rng(seed)
-        self.scale7 = 8.0  # sen action'u step'te 8.0 ile çarpıyorsun; noise'u küçük tut
-        atexit.register(self.close)
-
-        if num_workers is None:
-            num_workers = max(1, mp.cpu_count() - 1)
-        self.num_workers = num_workers
-
-        ctx = mp.get_context("spawn")
-        self.pool = ctx.Pool(
-            processes=self.num_workers,
-            initializer=_init_worker,
-            initargs=(controller, control_freq, init_idx, problem_folder, task_name),
+        super().__init__(
+            env_wrapper=env_wrapper,
+            wrapper_cls=SimpleWrapper,
+            horizon=horizon,
+            num_samples=num_samples,
+            noise_scale=noise_scale,
+            controller=controller,
+            control_freq=control_freq,
+            num_workers=num_workers,
+            seed=seed,
+            init_idx=init_idx,
+            problem_folder=problem_folder,
+            task_name=task_name,
         )
-
-    def close(self):
-        self.pool.terminate()
-        self.pool.join()
-
-    def compute_control(self):
-        """
-        Mevcut env durumundan başlayıp num_samples rollout'u paralel değerlendirir.
-        En iyi birinci adım aksiyonunu döndürür (3D).
-        """
-        # Mevcut state'sini kopyala (tek seferde)
-        initial_state = self.envw.env.sim.get_state()
-
-        # NumPy ile tüm örneklemeleri hazırla (H,3) shape; küçük noise koy
-        # Not: step() içinde 8.0 ile çarpılıyor; burada noise_scale'i düşük tut
-        actions = self.rng.uniform(-1, 1, size=(self.num_samples, self.horizon, 6)) \
-                * (self.noise_scale / self.scale7)
-
-        # Paralel değerlendir
-        tasks = [(actions[i], initial_state) for i in range(self.num_samples)]
-        costs = self.pool.map(_evaluate_one, tasks)
-
-        best_idx = int(np.argmin(costs))
-        best_first_action = actions[best_idx, 0]
-        return best_first_action
 
 
 import os

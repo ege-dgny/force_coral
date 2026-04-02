@@ -1,5 +1,5 @@
 """
-Custom predicates: OnSide, OnSideWithRecentSupport.
+Custom predicates: OnSide, OnSideWithRecentSupport, AboveHeight.
 """
 
 import numpy as np
@@ -73,3 +73,24 @@ class OnSideWithRecentSupport(BinaryAtomic):
                 return bool(on_side_now)
 
         return bool(on_side_now and support_latched)
+
+
+class AboveHeight(UnaryAtomic):
+    """Returns True if the object's top face exceeds the env lift goal."""
+
+    def __init__(self, default_height: float = 0.50):
+        super().__init__()
+        self.default_height = float(default_height)
+
+    def __call__(self, arg):
+        try:
+            env = getattr(arg, "env", None)
+            target = getattr(env, "_lift_height_goal", self.default_height)
+            pos = arg.get_geom_state()["pos"]
+            body_id = env.obj_body_id[arg.object_name]
+            geom_id = env.sim.model.body_geomadr[body_id]
+            half_height = float(env.sim.model.geom_size[geom_id][2])
+            top_height = float(pos[2]) + half_height
+            return bool(top_height >= float(target))
+        except Exception:
+            return False
