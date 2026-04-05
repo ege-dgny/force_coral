@@ -23,6 +23,19 @@ class ForceBand:
 
 
 @dataclasses.dataclass
+class ContactStrategy:
+    """Which face to approach, standoff distance, vertical offset."""
+
+    approach_face_axis: int = 1        # 0=x, 1=y, 2=z
+    approach_face_sign: float = -1.0   # direction along axis
+    contact_standoff: float = 0.03     # meters from face surface
+    contact_vertical_offset_scale: float = 0.0  # fraction of half-extent
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
 class PhysicsConfig:
     """Structured semantic package emitted by the VLM."""
 
@@ -33,6 +46,9 @@ class PhysicsConfig:
     goal: Dict[str, Any]
     cost_weights: Dict[str, float]
     recovery_hints: List[str]
+    contact_strategy: ContactStrategy = dataclasses.field(
+        default_factory=ContactStrategy,
+    )
 
     def __post_init__(self):
         if self.task_frame is None and self.task_frame_euler is not None:
@@ -48,6 +64,7 @@ class PhysicsConfig:
             "goal": self.goal,
             "cost_weights": self.cost_weights,
             "recovery_hints": self.recovery_hints,
+            "contact_strategy": self.contact_strategy.to_dict(),
         }
 
 
@@ -60,8 +77,8 @@ def default_physics_config() -> PhysicsConfig:
         goal={"target_height": 0.50},
         cost_weights={
             "task_height": 14.0,
-            "task_contact": 8.0,
-            "task_pose": 18.0,
+            "task_contact": 18.0,
+            "task_pose": 4.0,
             "energy": 0.2,
             "force_upper": 25.0,
             "force_lower": 12.0,
@@ -70,42 +87,79 @@ def default_physics_config() -> PhysicsConfig:
     )
 
 
-_SYSTEM_PROMPT = """\
-You are a robotics physics expert. Given an image of a manipulation scene and \
-a task description, determine the physical interaction package for a wall-assisted \
-contact-rich manipulation controller.
+_SYSTEM_PROMPT_TEMPLATE = """\
+You are a robotics physics expert. A Panda robot must perform a contact-rich \
+manipulation task. You are given an image of the scene, the task description, \
+and the 3D positions/dimensions of all objects.
 
-Output a single JSON object inside a ```json block with this exact schema:
+## Scene geometry (meters, world frame: +x=right, +y=forward, +z=up)
+{scene_geometry}
+
+## Instructions
+Determine the full physical interaction package. Output a single JSON object \
+inside a ```json block with this exact schema:
 
 ```json
-{
-  "stiffness": {
+{{
+  "contact_strategy": {{
+    "approach_face_axis": 0|1|2,
+    "approach_face_sign": -1.0|1.0,
+    "contact_standoff": 0.03,
+    "contact_vertical_offset_scale": 0.0
+  }},
+  "stiffness": {{
     "x": "HIGH|MEDIUM|LOW",
     "y": "HIGH|MEDIUM|LOW",
     "z": "HIGH|MEDIUM|LOW"
-  },
-  "force_band": {"lower": 2.0, "upper": 12.0},
+  }},
+  "force_band": {{"lower": 2.5, "upper": 12.0}},
   "task_frame_euler": [0.0, 0.0, 0.0],
-  "goal": {"target_height": 0.50},
-  "cost_weights": {
+  "goal": {{"target_height": 0.50}},
+  "cost_weights": {{
     "task_height": 14.0,
-    "task_contact": 8.0,
-    "task_pose": 18.0,
+    "task_contact": 18.0,
+    "task_pose": 4.0,
     "energy": 0.2,
     "force_upper": 25.0,
     "force_lower": 12.0
-  },
+  }},
   "recovery_hints": ["re_establish_contact"]
-}
+}}
 ```
 
-Definitions:
-- x = wall-normal, y = upward sliding direction, z = remaining tangential axis.
-- force_band.lower keeps the object pinned against the wall.
-- force_band.upper prevents over-force and wall-friction jamming.
-- recovery_hints must be short phrases chosen from:
+## Field definitions
+- contact_strategy: which box face the robot should approach.
+  - approach_face_axis: 0=x, 1=y, 2=z of the box body frame.
+  - approach_face_sign: -1 or +1 — the direction the robot comes from.
+  - contact_standoff: how far from the face surface (meters) the EEF target sits.
+  - contact_vertical_offset_scale: vertical offset as fraction of box half-height \
+    (0.0=center, -1.0=bottom edge, +1.0=top edge). Use negative for lifting tasks \
+    (push from below center of mass).
+- stiffness: per-axis contact stiffness prior in the task frame.
+  x=wall-normal, y=upward sliding, z=lateral.
+  HIGH=rigid contact (wall), LOW=free sliding, MEDIUM=moderate resistance.
+- force_band.lower: minimum normal force (N) to maintain wall contact.
+- force_band.upper: maximum normal force (N) before jamming.
+- goal.target_height: desired box-top height in meters.
+- cost_weights: relative weights for the MPPI cost function.
+  task_contact should dominate task_pose to ensure the robot makes contact.
+- recovery_hints: chosen from \
   ["re_establish_contact", "reduce_normal_force_if_stalled", "raise_subgoal"]
 """
+
+
+def _build_scene_geometry_text(scene_info: Dict[str, Any]) -> str:
+    """Format scene geometry dict into readable text for the VLM prompt."""
+    lines = []
+    for key, val in scene_info.items():
+        if isinstance(val, np.ndarray):
+            val = val.tolist()
+        if isinstance(val, list):
+            formatted = "[" + ", ".join(f"{v:.4f}" for v in val) + "]"
+            lines.append(f"- {key}: {formatted}")
+        else:
+            lines.append(f"- {key}: {val}")
+    return "\n".join(lines)
 
 
 class TaskPhysicsParser:
@@ -123,7 +177,12 @@ class TaskPhysicsParser:
             except Exception:
                 self.client = None
 
-    def parse_task(self, image, text_prompt: str) -> PhysicsConfig:
+    def parse_task(
+        self,
+        image,
+        text_prompt: str,
+        scene_info: Optional[Dict[str, Any]] = None,
+    ) -> PhysicsConfig:
         if self.client is None:
             raise RuntimeError(
                 "No OpenAI client available. Set OPENAI_API_KEY or pass client=."
@@ -133,8 +192,11 @@ class TaskPhysicsParser:
         image.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
+        geo_text = _build_scene_geometry_text(scene_info or {})
+        prompt = _SYSTEM_PROMPT_TEMPLATE.format(scene_geometry=geo_text or "Not provided.")
+
         content = [
-            {"type": "input_text", "text": f"Task: {text_prompt}\n\n{_SYSTEM_PROMPT}"},
+            {"type": "input_text", "text": f"Task: {text_prompt}\n\n{prompt}"},
             {"type": "input_image", "image_url": f"data:image/png;base64,{b64}"},
         ]
 
@@ -199,6 +261,19 @@ class TaskPhysicsParser:
             recovery_hints = [str(recovery_hints)]
         recovery_hints = [str(item) for item in recovery_hints]
 
+        cs_raw = data.get("contact_strategy", {})
+        if not isinstance(cs_raw, dict):
+            cs_raw = {}
+        cs_defaults = ContactStrategy()
+        contact_strategy = ContactStrategy(
+            approach_face_axis=int(cs_raw.get("approach_face_axis", cs_defaults.approach_face_axis)),
+            approach_face_sign=float(cs_raw.get("approach_face_sign", cs_defaults.approach_face_sign)),
+            contact_standoff=float(cs_raw.get("contact_standoff", cs_defaults.contact_standoff)),
+            contact_vertical_offset_scale=float(
+                cs_raw.get("contact_vertical_offset_scale", cs_defaults.contact_vertical_offset_scale)
+            ),
+        )
+
         return PhysicsConfig(
             stiffness_prior=stiffness_norm,
             force_band=ForceBand(lower=lower, upper=upper),
@@ -207,4 +282,5 @@ class TaskPhysicsParser:
             goal=goal,
             cost_weights=merged_weights,
             recovery_hints=recovery_hints,
+            contact_strategy=contact_strategy,
         )

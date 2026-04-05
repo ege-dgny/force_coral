@@ -32,10 +32,18 @@ class SemanticManager:
         self.active_config: PhysicsConfig = default_physics_config()
         self.revision_history: List[SemanticRevision] = []
 
-    def initialize(self, *, image=None, task_prompt: str = "") -> PhysicsConfig:
+    def initialize(
+        self,
+        *,
+        image=None,
+        task_prompt: str = "",
+        scene_info: dict | None = None,
+    ) -> PhysicsConfig:
         if image is not None and self.parser is not None:
             try:
-                self.active_config = self.parser.parse_task(image, task_prompt)
+                self.active_config = self.parser.parse_task(
+                    image, task_prompt, scene_info=scene_info,
+                )
             except Exception:
                 self.active_config = default_physics_config()
         else:
