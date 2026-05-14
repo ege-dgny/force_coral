@@ -158,8 +158,80 @@ class SemanticRevision:
     review_reason: str = "periodic"
 
 
-def default_phases() -> List[TaskPhase]:
-    """Default 3-phase plan for wall-assisted box lift."""
+def infer_task_family(task_name: str) -> str:
+    name = (task_name or "").lower()
+    if "flip" in name and "wall" in name:
+        return "wall_flip"
+    return "wall_lift"
+
+
+def default_phases(task_name: str = "") -> List[TaskPhase]:
+    """Default 3-phase plans for supported task families."""
+    task_family = infer_task_family(task_name)
+    if task_family == "wall_flip":
+        return [
+            TaskPhase(
+                name="approach",
+                trigger="initial",
+                cost_weights={
+                    "task_height": 1.0,
+                    "task_contact": 8.0,
+                    "task_pose": 18.0,
+                    "task_lateral": 4.0,
+                    "energy": 0.0,
+                    "force_upper": 0.0,
+                    "force_lower": 0.0,
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=1, approach_face_sign=-1.0,
+                    contact_standoff=0.03, contact_vertical_offset_scale=0.0,
+                ),
+                force_band=ForceBand(lower=0.0, upper=100.0),
+                goal={"target_tilt_deg": 80.0, "target_height": 0.10},
+            ),
+            TaskPhase(
+                name="push_to_wall",
+                trigger="eef_near_box:0.05",
+                cost_weights={
+                    "task_height": 1.0,
+                    "task_contact": 18.0,
+                    "task_pose": 6.0,
+                    "task_lateral": 20.0,
+                    "energy": 0.0,
+                    "force_upper": 0.0,
+                    "force_lower": 0.0,
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=1, approach_face_sign=-1.0,
+                    contact_standoff=0.02, contact_vertical_offset_scale=0.15,
+                ),
+                force_band=ForceBand(lower=0.0, upper=100.0),
+                goal={"target_tilt_deg": 80.0, "target_height": 0.10},
+            ),
+            TaskPhase(
+                name="flip",
+                trigger="wall_contact",
+                cost_weights={
+                    "task_height": 0.5,
+                    "task_contact": 8.0,
+                    "task_pose": 4.0,
+                    "task_lateral": 30.0,
+                    "task_tilt": 42.0,
+                    "energy": 0.1,
+                    "force_upper": 20.0,
+                    "force_lower": 2.0,
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=1, approach_face_sign=-1.0,
+                    contact_standoff=0.01, contact_vertical_offset_scale=0.22,
+                    gripper_command=-1.0,
+                ),
+                force_band=ForceBand(lower=1.0, upper=18.0),
+                goal={"target_tilt_deg": 80.0, "target_height": 0.12, "gap_target": 0.0},
+                action_prior=[0.0, 0.25, 0.60, 0.0, 0.0, 0.0],
+            ),
+        ]
+
     return [
         TaskPhase(
             name="approach",
@@ -225,8 +297,8 @@ def default_phases() -> List[TaskPhase]:
     ]
 
 
-def default_physics_config() -> PhysicsConfig:
-    phases = default_phases()
+def default_physics_config(task_name: str = "") -> PhysicsConfig:
+    phases = default_phases(task_name=task_name)
     first = phases[0]
     return PhysicsConfig(
         stiffness_prior={"x": "HIGH", "y": "LOW", "z": "MEDIUM"},

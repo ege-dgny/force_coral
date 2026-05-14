@@ -181,3 +181,45 @@ def compute_wall_lift_task_cost(
         "pose": pose_cost, "tilt": tilt_cost, "lateral": lateral_cost,
         "total": total,
     }
+
+
+def compute_wall_flip_task_cost(
+    *,
+    box_tilt_deg: float,
+    target_tilt_deg: float,
+    wall_gap: float,
+    eef_to_contact_distance: float,
+    weights: Dict[str, float],
+    gap_target: float = 0.0,
+    lateral_offset: float = 0.0,
+    box_top_height: float = 0.0,
+    target_height: float = 0.0,
+) -> Dict[str, float]:
+    """Geometric task cost terms for wall-assisted side-flip.
+
+    Unlike lift, the primary progress variable is tilt angle toward side pose.
+    We keep the same term keys for logging/plot compatibility.
+    """
+    # For flip, lower penalty as tilt approaches target (e.g., ~80-90 deg).
+    tilt_progress_cost = max(0.0, float(target_tilt_deg) - float(box_tilt_deg)) ** 2 / 100.0
+    contact_cost = max(0.0, float(wall_gap) - float(gap_target)) ** 2
+    pose_cost = float(eef_to_contact_distance) ** 2
+    lateral_cost = float(lateral_offset) ** 2
+    # Optional mild height shaping (kept for compatibility with existing logs/weights).
+    height_cost = max(0.0, float(target_height) - float(box_top_height)) ** 2
+
+    total = (
+        float(weights.get("task_height", 0.0)) * height_cost
+        + float(weights.get("task_contact", 12.0)) * contact_cost
+        + float(weights.get("task_pose", 4.0)) * pose_cost
+        + float(weights.get("task_tilt", 24.0)) * tilt_progress_cost
+        + float(weights.get("task_lateral", 0.0)) * lateral_cost
+    )
+    return {
+        "height": height_cost,
+        "contact": contact_cost,
+        "pose": pose_cost,
+        "tilt": tilt_progress_cost,
+        "lateral": lateral_cost,
+        "total": total,
+    }

@@ -31,7 +31,7 @@ from FORTE.geometry import build_wall_lift_task_frame, compute_box_face_anchor
 from FORTE.monitor import WallLiftTaskMonitor
 from FORTE.mppi import ParallelMPPI
 from FORTE.semantic import SemanticManager
-from FORTE.types import ContactBelief, ContactHypothesis, ContactStrategy
+from FORTE.types import ContactBelief, ContactHypothesis, ContactStrategy, infer_task_family
 from FORTE.vlm import TaskPhysicsParser
 
 if platform.system() == "Darwin":
@@ -49,6 +49,72 @@ DEMO_TASKS = {
     "wall_lift": TASK_NAME,
     "wall_flip": WALL_FLIP_TASK_NAME,
 }
+
+
+def _load_dotenv_if_present() -> None:
+    """Best-effort .env loader for server runs without shell export."""
+    if os.environ.get("OPENAI_API_KEY"):
+        return
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parents[1] / ".env",
+        Path.home() / ".env",
+    ]
+    for dotenv_path in candidates:
+        if not dotenv_path.exists():
+            continue
+        try:
+            for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                    if "=" not in line:
+                        continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                # Keep quoted values intact, strip lightweight inline comments otherwise.
+                if (value.startswith('"') and value.endswith('"')) or (
+                    value.startswith("'") and value.endswith("'")
+                ):
+                    value = value[1:-1]
+                else:
+                    value = value.split(" #", 1)[0].strip()
+                if key:
+                    os.environ.setdefault(key, value)
+            if os.environ.get("OPENAI_API_KEY"):
+                LOGGER.info("Loaded OPENAI_API_KEY from %s", dotenv_path)
+                return
+        except Exception as exc:
+            LOGGER.warning("Failed reading %s: %s", dotenv_path, exc)
+
+
+def _goal_uses_tilt(goal: Dict[str, Any]) -> bool:
+    return "target_tilt_deg" in goal and float(goal.get("target_tilt_deg", -1.0)) >= 0.0
+
+
+def _target_progress_from_goal(goal: Dict[str, Any]) -> float:
+    if _goal_uses_tilt(goal):
+        return float(goal.get("target_tilt_deg", 80.0))
+    return float(goal.get("target_height", 0.50))
+
+
+def _monitor_config_from_goal(goal: Dict[str, Any]) -> Dict[str, Any]:
+    if _goal_uses_tilt(goal):
+        return {
+            "target_metric_name": "tilt_deg",
+            "progress_eps": 0.2,       # degrees
+            "drop_threshold": 2.0,     # degrees
+            "success_requires_contact": False,
+        }
+    return {
+        "target_metric_name": "height_m",
+        "progress_eps": 1e-3,         # meters
+        "drop_threshold": 0.01,       # meters
+        "success_requires_contact": True,
+    }
 
 
 def _camera_world_transform(env, camera_name: str) -> np.ndarray:
@@ -342,11 +408,13 @@ def run_forte(
 ) -> Dict[str, Any]:
     if pose_source not in {"ground_truth", "foundationpose"}:
         raise ValueError("pose_source must be 'ground_truth' or 'foundationpose'")
+    _load_dotenv_if_present()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join("my_runs", f"forte_{task_name}", timestamp)
     os.makedirs(out_dir, exist_ok=True)
     use_camera_obs = (pose_source == "foundationpose")
+    task_family = infer_task_family(task_name)
 
     # ---- Environments ----
     real_env = build_inner_env(
@@ -397,10 +465,17 @@ def run_forte(
         "osc_position_gain_kp": 150,
         "osc_output_max_m_per_step": 0.05,
         "approx_max_force_per_axis_N": 7.5,
+        "task_family": task_family,
     }
 
     # ---- Semantic initialization ----
-    parser = TaskPhysicsParser() if use_vlm else None
+    if use_vlm and not os.environ.get("OPENAI_API_KEY"):
+        LOGGER.warning(
+            "OPENAI_API_KEY not found after .env load; continuing with default non-VLM semantics."
+        )
+        parser = None
+    else:
+        parser = TaskPhysicsParser() if use_vlm else None
     semantic = SemanticManager(parser=parser, review_interval=review_interval)
 
     first_frame = None
@@ -436,10 +511,15 @@ def run_forte(
     inner_wrapper.configure_runtime(runtime_data)
 
     # ---- Task monitor ----
+    monitor_cfg = _monitor_config_from_goal(semantic_config.goal)
     monitor = WallLiftTaskMonitor(
-        target_height=float(semantic_config.goal["target_height"]),
+        target_height=_target_progress_from_goal(semantic_config.goal),
         force_lower=semantic_config.force_band.lower,
         force_upper=semantic_config.force_band.upper,
+        target_metric_name=monitor_cfg["target_metric_name"],
+        success_requires_contact=bool(monitor_cfg["success_requires_contact"]),
+        progress_eps=float(monitor_cfg["progress_eps"]),
+        drop_threshold=float(monitor_cfg["drop_threshold"]),
     )
 
     # ---- MPPI ----
@@ -529,9 +609,14 @@ def run_forte(
                 monitor.prev_height = None
 
             # Sync monitor with active phase's force band
-            monitor.target_height = float(semantic.active_config.goal["target_height"])
+            monitor.target_height = _target_progress_from_goal(semantic.active_config.goal)
             monitor.force_lower = float(semantic.active_config.force_band.lower)
             monitor.force_upper = float(semantic.active_config.force_band.upper)
+            monitor_cfg = _monitor_config_from_goal(semantic.active_config.goal)
+            monitor.target_metric_name = monitor_cfg["target_metric_name"]
+            monitor.progress_eps = float(monitor_cfg["progress_eps"])
+            monitor.drop_threshold = float(monitor_cfg["drop_threshold"])
+            monitor.success_requires_contact = bool(monitor_cfg["success_requires_contact"])
 
             # 5) Contact-point hypotheses: propose -> filter -> rerank
             best_hypothesis, top_hypotheses = _select_contact_hypothesis(
@@ -590,9 +675,11 @@ def run_forte(
             measured_force_task_post = real_wrapper.get_force_task()
             box_height = real_wrapper.get_box_top_height()
             box_height_rel = real_wrapper.get_box_lift_height()
+            box_tilt_deg = real_wrapper.get_box_tilt_deg()
+            progress_value = box_tilt_deg if _goal_uses_tilt(semantic.active_config.goal) else box_height_rel
             wall_contact = real_wrapper.has_wall_contact()
             status = monitor.update(
-                box_height=box_height_rel,
+                box_height=progress_value,
                 normal_force=float(measured_force_task_post[0]),
                 wall_contact=wall_contact,
             )
@@ -619,9 +706,8 @@ def run_forte(
                     monitor_status=status,
                     recent_metrics={
                         "box_height": box_height_rel,
-                        "box_tilt_deg": float(np.degrees(np.arccos(np.clip(
-                            abs(real_wrapper.get_box_rotmat()[2, 2]), 0, 1
-                        )))),
+                        "box_tilt_deg": box_tilt_deg,
+                        "task_progress": progress_value,
                         "measured_force_normal": float(measured_force_task_post[0]),
                         "wall_gap": float(real_wrapper.wall_gap()),
                         "lateral_offset": float(real_wrapper.get_box_pos()[0]) - box_x_init,
@@ -676,6 +762,8 @@ def run_forte(
                 "box_euler_deg": box_euler,
                 "box_height": box_height_rel,
                 "box_height_abs": box_height,
+                "box_tilt_deg": box_tilt_deg,
+                "task_progress": progress_value,
                 # Contact geometry
                 "wall_gap": float(wg),
                 "wall_contact": bool(wall_contact),
@@ -731,7 +819,8 @@ def run_forte(
 
             print(
                 f"Step {step:03d} | {semantic.current_phase.name:14s} | "
-                f"h={box_height_rel:.3f}m | gap={wg:.4f}m | lat={lateral_offset:+.3f}m | "
+                f"h={box_height_rel:.3f}m | tilt={box_tilt_deg:5.1f}deg | "
+                f"prog={progress_value:.3f} | gap={wg:.4f}m | lat={lateral_offset:+.3f}m | "
                 f"F_n={float(measured_force_task_post[0]):.2f}N | "
                 f"contact={'Y' if contact_latched else 'N'} | {status['reason']}"
             )
@@ -746,7 +835,11 @@ def run_forte(
                         break
 
             if status["success"]:
-                print(f"Success at step {step}: h={box_height_rel:.3f}m")
+                print(
+                    f"Success at step {step}: "
+                    f"{monitor.target_metric_name}={progress_value:.3f} "
+                    f"(target={monitor.target_height:.3f})"
+                )
                 break
 
         return artifacts.finalize()

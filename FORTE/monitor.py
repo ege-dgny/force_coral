@@ -1,4 +1,4 @@
-"""Task progress monitor for wall-lift tasks."""
+"""Task progress monitor for FORTE tasks."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ class WallLiftTaskMonitor:
         target_height: float,
         force_lower: float,
         force_upper: float,
+        target_metric_name: str = "height",
+        success_requires_contact: bool = True,
         progress_eps: float = 1e-3,
         stall_window: int = 8,
         drop_threshold: float = 0.01,
@@ -23,6 +25,8 @@ class WallLiftTaskMonitor:
         self.target_height = float(target_height)
         self.force_lower = float(force_lower)
         self.force_upper = float(force_upper)
+        self.target_metric_name = str(target_metric_name)
+        self.success_requires_contact = bool(success_requires_contact)
         self.progress_eps = float(progress_eps)
         self.stall_window = int(stall_window)
         self.drop_threshold = float(drop_threshold)
@@ -65,7 +69,9 @@ class WallLiftTaskMonitor:
             self.stall_counter = 0
 
         contact_ok = bool(wall_contact)
-        success = box_height >= self.target_height and contact_ok
+        success = box_height >= self.target_height and (
+            contact_ok if self.success_requires_contact else True
+        )
         repeated_over_force = self.over_force_counter >= self.over_force_window
         stall = self.stall_counter >= self.stall_window
 
@@ -97,4 +103,5 @@ class WallLiftTaskMonitor:
             "regime": regime,
             "height_delta": height_delta,
             "wall_contact": contact_ok,
+            "target_metric_name": self.target_metric_name,
         }

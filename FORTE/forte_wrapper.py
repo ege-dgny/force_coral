@@ -22,6 +22,7 @@ from FORTE.geometry import (
     build_wall_lift_task_frame,
     compute_approach_face_sign,
     compute_best_approach_face,
+    compute_wall_flip_task_cost,
     compute_wall_lift_task_cost,
     world_to_task,
 )
@@ -63,6 +64,17 @@ class ForteWrapper(ObjectCentricWrapper):
     def get_box_lift_height(self) -> float:
         """Top height relative to initial top height (starts near 0)."""
         return float(self.get_box_top_height() - self.box_top_height_init)
+
+    def get_box_tilt_deg(self) -> float:
+        """Absolute tilt from upright in degrees (0=upright, 90=on side)."""
+        from scipy.spatial.transform import Rotation as R_conv
+
+        box_quat_wxyz = self.get_box_quat()
+        rot = R_conv.from_quat(
+            [box_quat_wxyz[1], box_quat_wxyz[2], box_quat_wxyz[3], box_quat_wxyz[0]]
+        )
+        box_z = rot.as_matrix()[:, 2]
+        return float(np.degrees(np.arccos(np.clip(abs(box_z[2]), 0, 1))))
 
     def _update_approach_face(self) -> None:
         """Pick box face that currently points away from wall."""
@@ -106,28 +118,36 @@ class ForteWrapper(ObjectCentricWrapper):
         weights = self.semantic_config.cost_weights
         goal = self.semantic_config.goal
         gap_target = float(goal.get("gap_target", 0.0))
-
-        from scipy.spatial.transform import Rotation as R_conv
-
-        box_quat_wxyz = self.get_box_quat()
-        rot = R_conv.from_quat(
-            [box_quat_wxyz[1], box_quat_wxyz[2], box_quat_wxyz[3], box_quat_wxyz[0]]
-        )
-        box_z = rot.as_matrix()[:, 2]
-        tilt_deg = float(np.degrees(np.arccos(np.clip(abs(box_z[2]), 0, 1))))
+        tilt_deg = self.get_box_tilt_deg()
         lateral_offset = float(self.get_box_pos()[0]) - self.box_x_init
         eef_to_contact = float(np.linalg.norm(self.get_eef_pos() - self.get_desired_contact_world()))
+        box_lift_height = self.get_box_lift_height()
+        target_height = float(goal.get("target_height", 0.50))
+        target_tilt_deg = float(goal.get("target_tilt_deg", -1.0))
 
-        task_terms = compute_wall_lift_task_cost(
-            box_top_height=self.get_box_lift_height(),
-            target_height=float(goal.get("target_height", 0.50)),
-            wall_gap=self.wall_gap(),
-            eef_to_contact_distance=eef_to_contact,
-            weights=weights,
-            gap_target=gap_target,
-            box_tilt_deg=tilt_deg,
-            lateral_offset=lateral_offset,
-        )
+        if target_tilt_deg >= 0.0:
+            task_terms = compute_wall_flip_task_cost(
+                box_tilt_deg=tilt_deg,
+                target_tilt_deg=target_tilt_deg,
+                wall_gap=self.wall_gap(),
+                eef_to_contact_distance=eef_to_contact,
+                weights=weights,
+                gap_target=gap_target,
+                lateral_offset=lateral_offset,
+                box_top_height=box_lift_height,
+                target_height=target_height,
+            )
+        else:
+            task_terms = compute_wall_lift_task_cost(
+                box_top_height=box_lift_height,
+                target_height=target_height,
+                wall_gap=self.wall_gap(),
+                eef_to_contact_distance=eef_to_contact,
+                weights=weights,
+                gap_target=gap_target,
+                box_tilt_deg=tilt_deg,
+                lateral_offset=lateral_offset,
+            )
 
         task_cost = float(task_terms["total"])
         energy = 0.0

@@ -68,9 +68,9 @@ class SemanticManager:
                 )
             except Exception as exc:
                 LOGGER.warning("VLM init failed (%s), using defaults", exc)
-                self.active_config = default_physics_config()
+                self.active_config = default_physics_config(task_name=task_prompt)
         else:
-            self.active_config = default_physics_config()
+            self.active_config = default_physics_config(task_name=task_prompt)
         self.phase_index = 0
         self._apply_phase(self.active_config.phases[0])
         return self.active_config
@@ -104,6 +104,7 @@ class SemanticManager:
             approach_face_sign=phase.contact_strategy.approach_face_sign,
             contact_standoff=phase.contact_strategy.contact_standoff,
             contact_vertical_offset_scale=phase.contact_strategy.contact_vertical_offset_scale,
+            gripper_command=phase.contact_strategy.gripper_command,
         )
 
     # ------------------------------------------------------------------
