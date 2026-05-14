@@ -54,32 +54,37 @@ def compute_wall_gap(
 ) -> float:
     """Surface-to-surface gap between oriented box and wall geoms.
 
-    Computes distance along the instantaneous box->wall direction using
-    OBB support radii. This is robust to geom offsets and rotation.
+    Computes distance along the wall's surface normal (thin axis), which is
+    the physically meaningful contact direction for wall pushing.
     """
     box_center = np.asarray(box_pos, dtype=np.float64)
     wall_center = np.asarray(wall_pos, dtype=np.float64)
-    u = wall_center - box_center
-    norm = float(np.linalg.norm(u))
-    if norm < 1e-8:
-        # Fallback to +y when centers are degenerate.
-        u = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-    else:
-        u = u / norm
-
     box_half = np.asarray(box_half_extents, dtype=np.float64)
     wall_half = np.asarray(wall_half_extents, dtype=np.float64)
     box_R = np.asarray(box_rotmat, dtype=np.float64) if box_rotmat is not None else np.eye(3)
     wall_R = np.asarray(wall_rotmat, dtype=np.float64) if wall_rotmat is not None else np.eye(3)
 
-    # OBB support radius along direction u.
-    box_radius = float(np.abs(box_R.T @ u) @ box_half)
-    wall_radius = float(np.abs(wall_R.T @ u) @ wall_half)
+    # Wall normal = world direction of wall's thinnest local axis.
+    thin_axis = int(np.argmin(wall_half))
+    n = wall_R[:, thin_axis]
+    n_norm = float(np.linalg.norm(n))
+    if n_norm < 1e-8:
+        n = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    else:
+        n = n / n_norm
 
-    # Closest points on each object along u.
-    box_surface_toward_wall = box_center + u * box_radius
-    wall_surface_toward_box = wall_center - u * wall_radius
-    gap = float(np.dot(wall_surface_toward_box - box_surface_toward_wall, u))
+    # Orient normal to point from wall toward box.
+    if float(np.dot(n, box_center - wall_center)) < 0.0:
+        n = -n
+
+    # OBB support radius along wall normal.
+    box_radius = float(np.abs(box_R.T @ n) @ box_half)
+    wall_radius = float(np.abs(wall_R.T @ n) @ wall_half)
+
+    # Closest points along wall normal.
+    wall_surface_toward_box = wall_center + n * wall_radius
+    box_surface_toward_wall = box_center - n * box_radius
+    gap = float(np.dot(box_surface_toward_wall - wall_surface_toward_box, n))
     return gap
 
 

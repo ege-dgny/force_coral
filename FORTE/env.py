@@ -95,8 +95,8 @@ class ObjectCentricWrapper:
 
         self.box_body_id = env.sim.model.body_name2id(box_body_name)
         self.wall_body_id = env.sim.model.body_name2id(wall_body_name)
-        self.box_geom_id = env.sim.model.body_geomadr[self.box_body_id]
-        self.wall_geom_id = env.sim.model.body_geomadr[self.wall_body_id]
+        self.box_geom_id = self._select_collision_geom_id(self.box_body_id)
+        self.wall_geom_id = self._select_collision_geom_id(self.wall_body_id)
         self.box_half_extents = np.array(
             env.sim.model.geom_size[self.box_geom_id],
             dtype=np.float64,
@@ -106,6 +106,25 @@ class ObjectCentricWrapper:
             dtype=np.float64,
         )
         self._sync_warned = False
+
+    def _select_collision_geom_id(self, body_id: int) -> int:
+        """Pick a collision geom for a body (prefer contype/conaffinity-enabled geoms)."""
+        model = self.env.sim.model
+        start = int(model.body_geomadr[body_id])
+        num = int(model.body_geomnum[body_id])
+        if num <= 0:
+            return start
+        geom_ids = list(range(start, start + num))
+        collision_ids = [
+            gid for gid in geom_ids
+            if int(model.geom_contype[gid]) != 0 and int(model.geom_conaffinity[gid]) != 0
+        ]
+        if collision_ids:
+            return collision_ids[0]
+        group0_ids = [gid for gid in geom_ids if int(model.geom_group[gid]) == 0]
+        if group0_ids:
+            return group0_ids[0]
+        return geom_ids[0]
 
     def step(self, action: np.ndarray) -> np.ndarray:
         action7 = np.zeros(7, dtype=np.float64)

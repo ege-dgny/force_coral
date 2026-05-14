@@ -44,6 +44,11 @@ logging.getLogger("robosuite").setLevel(logging.ERROR)
 LOGGER = logging.getLogger(__name__)
 
 TASK_NAME = "push_the_box_up_along_the_wall_while_maintaining_contact"
+WALL_FLIP_TASK_NAME = "push_the_box_to_the_wall_and_use_the_wall_as_a_support_to_flip_the_box_onto_its_side"
+DEMO_TASKS = {
+    "wall_lift": TASK_NAME,
+    "wall_flip": WALL_FLIP_TASK_NAME,
+}
 
 
 def _camera_world_transform(env, camera_name: str) -> np.ndarray:
@@ -367,10 +372,10 @@ def run_forte(
     # Extract MuJoCo physics so VLM can reason about forces
     box_body_id = real_wrapper.box_body_id
     box_mass = float(real_env.sim.model.body_mass[box_body_id])
-    box_geom_id = real_env.sim.model.body_geomadr[box_body_id]
+    box_geom_id = real_wrapper.box_geom_id
     box_friction = float(real_env.sim.model.geom_friction[box_geom_id, 0])
     wall_body_id = real_wrapper.wall_body_id
-    wall_geom_id = real_env.sim.model.body_geomadr[wall_body_id]
+    wall_geom_id = real_wrapper.wall_geom_id
     wall_friction = float(real_env.sim.model.geom_friction[wall_geom_id, 0])
     effective_friction = max(box_friction, wall_friction)
 
@@ -755,6 +760,19 @@ def run_forte(
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
+    p.add_argument(
+        "--demo",
+        type=str,
+        default="wall_lift",
+        choices=sorted(DEMO_TASKS.keys()),
+        help="Demo preset task to run.",
+    )
+    p.add_argument(
+        "--task-name",
+        type=str,
+        default=None,
+        help="Explicit task name override (takes precedence over --demo).",
+    )
     p.add_argument("--vlm", action="store_true", help="Enable VLM (GPT-4o)")
     p.add_argument("--pose-source", type=str, default="ground_truth", choices=["ground_truth", "foundationpose"])
     p.add_argument("--camera", type=str, default="frontview")
@@ -769,7 +787,10 @@ if __name__ == "__main__":
     p.add_argument("--horizon", type=int, default=12)
     p.add_argument("--multiplier", type=float, default=10.0)
     args = p.parse_args()
+    task_name = args.task_name if args.task_name else DEMO_TASKS[args.demo]
+    print(f"[FORTE] Running demo='{args.demo}' task='{task_name}'")
     run_forte(
+        task_name=task_name,
         use_vlm=args.vlm,
         pose_source=args.pose_source,
         camera_name=args.camera,
