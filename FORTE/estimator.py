@@ -6,6 +6,7 @@ using the affine-invariant exponential map retraction.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -18,6 +19,7 @@ _DEFAULT_STIFFNESS_SCALE: Dict[str, float] = {
 }
 
 _AXIS_ORDER = ["x", "y", "z"]
+LOGGER = logging.getLogger(__name__)
 
 
 class RiemannianStiffnessEstimator:
@@ -132,6 +134,39 @@ class RiemannianStiffnessEstimator:
         return vecs @ np.diag(vals) @ vecs.T
 
     @staticmethod
+    def _normalize_stiffness_label(raw_label: str) -> str:
+        label = str(raw_label).strip().upper()
+        aliases = {
+            "VERY_HIGH": "HIGH",
+            "VHIGH": "HIGH",
+            "EXTREME": "HIGH",
+            "RIGID": "HIGH",
+            "HARD": "HIGH",
+            "VERY_LOW": "LOW",
+            "VLOW": "LOW",
+            "SOFT": "LOW",
+            "FLEXIBLE": "LOW",
+            "MID": "MEDIUM",
+            "MODERATE": "MEDIUM",
+            "NORMAL": "MEDIUM",
+            "AVERAGE": "MEDIUM",
+        }
+        if label in aliases:
+            return aliases[label]
+        if label in _DEFAULT_STIFFNESS_SCALE:
+            return label
+        try:
+            # Handle numeric-like LLM outputs ("0.9", "1", etc.).
+            val = float(label)
+            if val >= 0.66:
+                return "HIGH"
+            if val <= 0.33:
+                return "LOW"
+            return "MEDIUM"
+        except ValueError:
+            return "MEDIUM"
+
+    @staticmethod
     def from_vlm_prior(
         stiffness_labels: Dict[str, str],
         eta: float = 0.01,
@@ -141,9 +176,15 @@ class RiemannianStiffnessEstimator:
         sc = {**_DEFAULT_STIFFNESS_SCALE, **(scale or {})}
         diag_vals = []
         for axis in _AXIS_ORDER:
-            label = stiffness_labels.get(axis, "MEDIUM").upper()
+            raw_label = stiffness_labels.get(axis, "MEDIUM")
+            label = RiemannianStiffnessEstimator._normalize_stiffness_label(raw_label)
             if label not in sc:
-                raise ValueError(f"Unknown stiffness label '{label}' for axis '{axis}'")
+                LOGGER.warning(
+                    "Unknown stiffness label '%s' for axis '%s'; falling back to MEDIUM",
+                    raw_label,
+                    axis,
+                )
+                label = "MEDIUM"
             diag_vals.append(sc[label])
         return RiemannianStiffnessEstimator(
             K_init=np.diag(diag_vals).astype(np.float64),

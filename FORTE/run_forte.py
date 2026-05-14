@@ -386,7 +386,8 @@ def run_forte(
         "effective_contact_friction_mu": effective_friction,
         "eef_position": real_wrapper.get_eef_pos(),
         "wall_gap": real_wrapper.wall_gap(),
-        "box_top_height": real_wrapper.get_box_top_height(),
+        "box_top_height_abs": real_wrapper.get_box_top_height(),
+        "box_top_height_rel": 0.0,
         "gripper_max_opening_m": 0.02,
         "osc_position_gain_kp": 150,
         "osc_output_max_m_per_step": 0.05,
@@ -420,9 +421,11 @@ def run_forte(
 
     # ---- Initial runtime (stiffness=None = pre-contact) ----
     box_x_init = float(real_wrapper.get_box_pos()[0])
+    box_top_height_init = float(real_wrapper.get_box_top_height())
     runtime_data: Dict[str, Any] = {
         "semantic_config": semantic_config, "stiffness": None,
         "box_x_init": box_x_init,
+        "box_top_height_init": box_top_height_init,
     }
     real_wrapper.configure_runtime(runtime_data)
     inner_wrapper.configure_runtime(runtime_data)
@@ -501,13 +504,14 @@ def run_forte(
             # 3) Build metrics for phase transition check
             eef_pos = real_wrapper.get_eef_pos()
             box_height = real_wrapper.get_box_top_height()
+            box_height_rel = real_wrapper.get_box_lift_height()
             eef_to_contact = float(np.linalg.norm(
                 eef_pos - real_wrapper.get_desired_contact_world()
             ))
             phase_metrics = {
                 "wall_contact": wall_contact,
                 "wall_normal_force": wall_normal_force,
-                "box_top_height": box_height,
+                "box_top_height": box_height_rel,
                 "eef_to_contact_distance": eef_to_contact,
             }
 
@@ -541,6 +545,7 @@ def run_forte(
                 "semantic_config": semantic.active_config,
                 "stiffness": stiffness,
                 "box_x_init": box_x_init,
+                "box_top_height_init": box_top_height_init,
             }
             real_wrapper.configure_runtime(runtime_data)
             inner_wrapper.configure_runtime(runtime_data)
@@ -579,9 +584,10 @@ def run_forte(
             # 10) Monitor uses post-action force/state from same step
             measured_force_task_post = real_wrapper.get_force_task()
             box_height = real_wrapper.get_box_top_height()
+            box_height_rel = real_wrapper.get_box_lift_height()
             wall_contact = real_wrapper.has_wall_contact()
             status = monitor.update(
-                box_height=box_height,
+                box_height=box_height_rel,
                 normal_force=float(measured_force_task_post[0]),
                 wall_contact=wall_contact,
             )
@@ -607,7 +613,7 @@ def run_forte(
                 revision = semantic.revise(
                     monitor_status=status,
                     recent_metrics={
-                        "box_height": box_height,
+                        "box_height": box_height_rel,
                         "box_tilt_deg": float(np.degrees(np.arccos(np.clip(
                             abs(real_wrapper.get_box_rotmat()[2, 2]), 0, 1
                         )))),
@@ -663,7 +669,8 @@ def run_forte(
                 "box_pos": real_wrapper.get_box_pos().tolist(),
                 "box_quat": box_quat_wxyz.tolist(),
                 "box_euler_deg": box_euler,
-                "box_height": box_height,
+                "box_height": box_height_rel,
+                "box_height_abs": box_height,
                 # Contact geometry
                 "wall_gap": float(wg),
                 "wall_contact": bool(wall_contact),
@@ -677,10 +684,13 @@ def run_forte(
                 )),
                 "delta_task": delta_t.tolist(),
                 # Forces
+                "measured_force_task": measured_force_task_post.tolist(),
                 "measured_force_task_pre": measured_force_task_pre.tolist(),
                 "measured_force_task_post": measured_force_task_post.tolist(),
+                "measured_force_normal": float(measured_force_task_post[0]),
                 "measured_force_normal_pre": float(measured_force_task_pre[0]),
                 "measured_force_normal_post": float(measured_force_task_post[0]),
+                "predicted_force_normal": float(cost_terms["sim_force_normal"]),
                 "sim_force_normal_rollout_cost": float(cost_terms["sim_force_normal"]),
                 "wall_normal_force_pre": wall_normal_force,
                 "force_band_lower": float(semantic.active_config.force_band.lower),
@@ -716,7 +726,7 @@ def run_forte(
 
             print(
                 f"Step {step:03d} | {semantic.current_phase.name:14s} | "
-                f"h={box_height:.3f}m | gap={wg:.4f}m | lat={lateral_offset:+.3f}m | "
+                f"h={box_height_rel:.3f}m | gap={wg:.4f}m | lat={lateral_offset:+.3f}m | "
                 f"F_n={float(measured_force_task_post[0]):.2f}N | "
                 f"contact={'Y' if contact_latched else 'N'} | {status['reason']}"
             )
@@ -731,7 +741,7 @@ def run_forte(
                         break
 
             if status["success"]:
-                print(f"Success at step {step}: h={box_height:.3f}m")
+                print(f"Success at step {step}: h={box_height_rel:.3f}m")
                 break
 
         return artifacts.finalize()

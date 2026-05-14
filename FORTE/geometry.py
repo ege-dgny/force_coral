@@ -50,22 +50,37 @@ def compute_wall_gap(
     wall_pos: np.ndarray,
     wall_half_extents: np.ndarray,
     box_rotmat: Optional[np.ndarray] = None,
+    wall_rotmat: Optional[np.ndarray] = None,
 ) -> float:
-    """Gap between box front face and wall front face along y-axis.
+    """Surface-to-surface gap between oriented box and wall geoms.
 
-    When box_rotmat is provided, uses oriented bounding box projection
-    to correctly compute the box y-extent under rotation.
+    Computes distance along the instantaneous box->wall direction using
+    OBB support radii. This is robust to geom offsets and rotation.
     """
-    wall_front_y = float(wall_pos[1] - wall_half_extents[1])
-    if box_rotmat is not None:
-        # OBB projection: box extent along world y-axis
-        rotmat = np.asarray(box_rotmat, dtype=np.float64)
-        half = np.asarray(box_half_extents, dtype=np.float64)
-        box_y_extent = float(np.abs(rotmat[1, :]) @ half)
+    box_center = np.asarray(box_pos, dtype=np.float64)
+    wall_center = np.asarray(wall_pos, dtype=np.float64)
+    u = wall_center - box_center
+    norm = float(np.linalg.norm(u))
+    if norm < 1e-8:
+        # Fallback to +y when centers are degenerate.
+        u = np.array([0.0, 1.0, 0.0], dtype=np.float64)
     else:
-        box_y_extent = float(box_half_extents[1])
-    box_front_y = float(box_pos[1]) + box_y_extent
-    return float(wall_front_y - box_front_y)
+        u = u / norm
+
+    box_half = np.asarray(box_half_extents, dtype=np.float64)
+    wall_half = np.asarray(wall_half_extents, dtype=np.float64)
+    box_R = np.asarray(box_rotmat, dtype=np.float64) if box_rotmat is not None else np.eye(3)
+    wall_R = np.asarray(wall_rotmat, dtype=np.float64) if wall_rotmat is not None else np.eye(3)
+
+    # OBB support radius along direction u.
+    box_radius = float(np.abs(box_R.T @ u) @ box_half)
+    wall_radius = float(np.abs(wall_R.T @ u) @ wall_half)
+
+    # Closest points on each object along u.
+    box_surface_toward_wall = box_center + u * box_radius
+    wall_surface_toward_box = wall_center - u * wall_radius
+    gap = float(np.dot(wall_surface_toward_box - box_surface_toward_wall, u))
+    return gap
 
 
 def compute_approach_face_sign(

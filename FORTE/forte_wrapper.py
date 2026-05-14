@@ -37,6 +37,7 @@ class ForteWrapper(ObjectCentricWrapper):
         self.task_frame = build_wall_lift_task_frame()
         self.stiffness: Optional[np.ndarray] = None
         self.box_x_init: float = float(self.get_box_pos()[0])
+        self.box_top_height_init: float = float(self.get_box_top_height())
         self._update_approach_face()
 
     def configure_runtime(self, runtime_data: Optional[Dict[str, Any]]) -> None:
@@ -52,10 +53,16 @@ class ForteWrapper(ObjectCentricWrapper):
             self.stiffness = runtime_data["stiffness"]
         if "box_x_init" in runtime_data:
             self.box_x_init = float(runtime_data["box_x_init"])
+        if "box_top_height_init" in runtime_data:
+            self.box_top_height_init = float(runtime_data["box_top_height_init"])
         if not np.allclose(self.semantic_config.task_frame, np.eye(3)):
             self.task_frame = np.asarray(self.semantic_config.task_frame, dtype=np.float64)
         # Dynamically pick the face that currently points away from wall
         self._update_approach_face()
+
+    def get_box_lift_height(self) -> float:
+        """Top height relative to initial top height (starts near 0)."""
+        return float(self.get_box_top_height() - self.box_top_height_init)
 
     def _update_approach_face(self) -> None:
         """Pick box face that currently points away from wall."""
@@ -112,7 +119,7 @@ class ForteWrapper(ObjectCentricWrapper):
         eef_to_contact = float(np.linalg.norm(self.get_eef_pos() - self.get_desired_contact_world()))
 
         task_terms = compute_wall_lift_task_cost(
-            box_top_height=self.get_box_top_height(),
+            box_top_height=self.get_box_lift_height(),
             target_height=float(goal.get("target_height", 0.50)),
             wall_gap=self.wall_gap(),
             eef_to_contact_distance=eef_to_contact,

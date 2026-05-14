@@ -95,12 +95,14 @@ class ObjectCentricWrapper:
 
         self.box_body_id = env.sim.model.body_name2id(box_body_name)
         self.wall_body_id = env.sim.model.body_name2id(wall_body_name)
+        self.box_geom_id = env.sim.model.body_geomadr[self.box_body_id]
+        self.wall_geom_id = env.sim.model.body_geomadr[self.wall_body_id]
         self.box_half_extents = np.array(
-            env.sim.model.geom_size[env.sim.model.body_geomadr[self.box_body_id]],
+            env.sim.model.geom_size[self.box_geom_id],
             dtype=np.float64,
         )
         self.wall_half_extents = np.array(
-            env.sim.model.geom_size[env.sim.model.body_geomadr[self.wall_body_id]],
+            env.sim.model.geom_size[self.wall_geom_id],
             dtype=np.float64,
         )
         self._sync_warned = False
@@ -133,7 +135,10 @@ class ObjectCentricWrapper:
         return self.env.sim.data.site_xpos[sid].copy()
 
     def get_wall_pos(self) -> np.ndarray:
-        return self.env.sim.data.body_xpos[self.wall_body_id].copy()
+        return self.env.sim.data.geom_xpos[self.wall_geom_id].copy()
+
+    def get_wall_rotmat(self) -> np.ndarray:
+        return self.env.sim.data.geom_xmat[self.wall_geom_id].reshape(3, 3).copy()
 
     def get_contact_anchor_world(self) -> np.ndarray:
         return compute_box_face_anchor(
@@ -155,6 +160,7 @@ class ObjectCentricWrapper:
             self.get_box_pos(), self.box_half_extents,
             self.get_wall_pos(), self.wall_half_extents,
             box_rotmat=self.get_box_rotmat(),
+            wall_rotmat=self.get_wall_rotmat(),
         )
 
     def has_wall_contact(self, tolerance: float = 0.005) -> bool:
@@ -211,7 +217,7 @@ class ObjectCentricWrapper:
         qpos_addr, _ = self.env.sim.model.get_joint_qpos_addr(joint_name)
         self.env.sim.data.qpos[qpos_addr: qpos_addr + 7] = np.asarray(pose, dtype=np.float64)
         if size is not None:
-            geom_id = self.env.sim.model.body_geomadr[self.box_body_id]
+            geom_id = self.box_geom_id
             self.env.sim.model.geom_size[geom_id] = np.asarray(size, dtype=np.float64)
             self.box_half_extents = np.asarray(size, dtype=np.float64)
         self.env.sim.forward()
