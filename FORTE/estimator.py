@@ -6,7 +6,7 @@ using the affine-invariant exponential map retraction.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -43,6 +43,9 @@ class RiemannianStiffnessEstimator:
         self.max_update_norm = float(max_update_norm)
         self.max_exp_argument = float(max_exp_argument)
         self.K = self._project_spd(K_init)
+        # Diagnostics
+        self._update_count: int = 0
+        self._total_error_norm: float = 0.0
 
     def update(self, F_meas: np.ndarray, delta_x: np.ndarray) -> np.ndarray:
         """One SPD(3) exponential-map update."""
@@ -56,7 +59,9 @@ class RiemannianStiffnessEstimator:
             return self.K.copy()
 
         previous = self.K.copy()
+        self._update_count += 1
         e = F_meas - self.K @ delta_x
+        self._total_error_norm += float(np.linalg.norm(e))
         grad_eucl = -np.outer(e, delta_x)
         grad_sym = 0.5 * (grad_eucl + grad_eucl.T)
         grad_nat = self.K @ grad_sym @ self.K
@@ -82,6 +87,18 @@ class RiemannianStiffnessEstimator:
 
     def get_eigenvalues(self) -> np.ndarray:
         return np.linalg.eigvalsh(self.K)
+
+    def diagnostics(self) -> Dict[str, Any]:
+        """Convergence diagnostics for logging and LLM context."""
+        eig = self.get_eigenvalues()
+        return {
+            "eigenvalues": eig.tolist(),
+            "condition_number": float(eig[-1] / max(eig[0], 1e-12)),
+            "update_count": self._update_count,
+            "avg_error_norm": (
+                self._total_error_norm / max(1, self._update_count)
+            ),
+        }
 
     def reset(self, K_init: np.ndarray) -> None:
         K_init = np.asarray(K_init, dtype=np.float64)

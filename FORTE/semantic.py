@@ -1,17 +1,20 @@
-"""Bounded semantic supervision with phase transitions for FORTE.
+"""Bounded semantic supervision with phase transitions and LLM revision.
 
 The VLM generates a sequence of TaskPhases. The SemanticManager:
 1. Initializes with the VLM's phase plan (or defaults)
 2. Evaluates phase triggers against live metrics each step
 3. On transition: updates active_config's cost_weights, contact_strategy,
    force_band, and goal from the new phase
-4. Within a phase: bounded revisions (stall → bump height weight, etc.)
+4. On failure: re-queries the LLM with current config + metrics + image
+   (CoRAL-style refine_plan). The LLM can change everything: cost weights,
+   force bands, task_frame, stiffness_prior, phases, contact strategy.
 
 The FORTE cost structure (Eq. 5) is unchanged — only its parameters rotate.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from FORTE.types import (
@@ -24,20 +27,28 @@ from FORTE.types import (
 )
 from FORTE.vlm import TaskPhysicsParser
 
+LOGGER = logging.getLogger(__name__)
+
 
 class SemanticManager:
-    """Phase-aware semantic supervisor."""
+    """Phase-aware semantic supervisor with LLM revision."""
 
     def __init__(
         self,
         parser: Optional[TaskPhysicsParser] = None,
-        review_interval: int = 10,
+        review_interval: int = 20,
+        max_revisions: int = 5,
     ) -> None:
         self.parser = parser
         self.review_interval = max(1, int(review_interval))
+        self.max_revisions = int(max_revisions)
         self.active_config: PhysicsConfig = default_physics_config()
         self.revision_history: List[SemanticRevision] = []
         self.phase_index: int = 0
+        self._llm_revision_count: int = 0
+        self._llm_fail_count: int = 0
+        self._max_llm_failures: int = 3
+        self._last_revision_height: float = 0.0
 
     @property
     def current_phase(self) -> TaskPhase:
@@ -55,7 +66,8 @@ class SemanticManager:
                 self.active_config = self.parser.parse_task(
                     image, task_prompt, scene_info=scene_info,
                 )
-            except Exception:
+            except Exception as exc:
+                LOGGER.warning("VLM init failed (%s), using defaults", exc)
                 self.active_config = default_physics_config()
         else:
             self.active_config = default_physics_config()
@@ -71,7 +83,7 @@ class SemanticManager:
         """Check if next phase's trigger is met. Returns phase name or None."""
         phases = self.active_config.phases
         if self.phase_index >= len(phases) - 1:
-            return None  # already at last phase
+            return None
         next_phase = phases[self.phase_index + 1]
         if _evaluate_trigger(next_phase.trigger, metrics):
             self.phase_index += 1
@@ -95,7 +107,7 @@ class SemanticManager:
         )
 
     # ------------------------------------------------------------------
-    # Within-phase revisions (reactive adjustments)
+    # Revision logic (LLM-based when parser available, bounded fallback otherwise)
     # ------------------------------------------------------------------
 
     def should_review(self, step_idx: int, monitor_status: Dict[str, Any]) -> bool:
@@ -113,14 +125,122 @@ class SemanticManager:
         *,
         monitor_status: Dict[str, Any],
         recent_metrics: Dict[str, Any],
+        step_idx: int = 0,
+        estimator_state: Optional[Dict[str, Any]] = None,
+        image: Any = None,
     ) -> SemanticRevision:
+        """Revise the plan. Uses LLM when parser available, bounded fallback otherwise."""
+
+        # Try LLM revision if parser available, under revision cap, and not too many failures
+        if (
+            self.parser is not None
+            and self._llm_revision_count < self.max_revisions
+            and self._llm_fail_count < self._max_llm_failures
+        ):
+            return self._llm_revise(
+                monitor_status=monitor_status,
+                recent_metrics=recent_metrics,
+                step_idx=step_idx,
+                estimator_state=estimator_state,
+                image=image,
+            )
+
+        # Fallback: bounded local revision (no LLM)
+        return self._bounded_revise(
+            monitor_status=monitor_status,
+            recent_metrics=recent_metrics,
+        )
+
+    def _llm_revise(
+        self,
+        *,
+        monitor_status: Dict[str, Any],
+        recent_metrics: Dict[str, Any],
+        step_idx: int,
+        estimator_state: Optional[Dict[str, Any]],
+        image: Any,
+    ) -> SemanticRevision:
+        """Re-query LLM with failure feedback (CoRAL's refine_plan pattern)."""
+        revision = SemanticRevision(
+            review_reason=f"llm_revision_{self._llm_revision_count}",
+        )
+        current_height = float(recent_metrics.get("box_height", 0.0))
+
+        try:
+            new_config = self.parser.refine_phases(
+                current_config=self.active_config,
+                current_phase_name=self.current_phase.name,
+                phase_index=self.phase_index,
+                steps_executed=step_idx,
+                monitor_feedback=monitor_status,
+                recent_metrics=recent_metrics,
+                estimator_state=estimator_state,
+                image=image,
+            )
+
+            # Apply the new config
+            old_phase_name = self.current_phase.name
+            self.active_config = new_config
+
+            # Try to resume at same phase name, else restart from phase 0
+            self.phase_index = 0
+            for i, phase in enumerate(new_config.phases):
+                if phase.name == old_phase_name:
+                    self.phase_index = i
+                    break
+            self._apply_phase(self.active_config.phases[self.phase_index])
+
+            self._llm_revision_count += 1
+            self._last_revision_height = current_height
+
+            revision.phase_transition = self.current_phase.name
+            revision.cost_weights = dict(self.active_config.cost_weights)
+            revision.force_band = {
+                "lower": self.active_config.force_band.lower,
+                "upper": self.active_config.force_band.upper,
+            }
+            LOGGER.info(
+                "LLM revision %d: phase=%s, heights=%.3f→?",
+                self._llm_revision_count, self.current_phase.name, current_height,
+            )
+
+        except Exception as exc:
+            self._llm_fail_count += 1
+            LOGGER.warning(
+                "LLM revision failed (%d/%d): %s",
+                self._llm_fail_count, self._max_llm_failures, exc,
+            )
+            return self._bounded_revise(
+                monitor_status=monitor_status,
+                recent_metrics=recent_metrics,
+            )
+
+        self.revision_history.append(revision)
+        return revision
+
+    def _bounded_revise(
+        self,
+        *,
+        monitor_status: Dict[str, Any],
+        recent_metrics: Dict[str, Any],
+    ) -> SemanticRevision:
+        """Bounded local revision (no LLM). Fallback when parser unavailable."""
         revision = SemanticRevision(
             review_reason=str(monitor_status.get("reason", "periodic")),
         )
         cfg = self.active_config
 
-        if monitor_status.get("drop", False) or monitor_status.get("contact_lost", False):
-            lower = min(cfg.force_band.upper - 0.5, cfg.force_band.lower + 1.0)
+        MAX_HEIGHT_WEIGHT = 60.0
+        MAX_FORCE_LOWER = 5.0
+
+        # Don't escalate force_lower in pre-contact phases (force costs disabled)
+        force_phase = float(cfg.cost_weights.get("force_lower", 0.0)) > 0
+
+        if (monitor_status.get("drop", False) or monitor_status.get("contact_lost", False)) and force_phase:
+            lower = min(
+                MAX_FORCE_LOWER,
+                min(cfg.force_band.upper - 0.5, cfg.force_band.lower + 0.5),
+            )
             revision.force_band = {"lower": max(0.0, lower), "upper": cfg.force_band.upper}
             revision.recovery_mode = "re_establish_contact"
 
@@ -130,7 +250,8 @@ class SemanticManager:
                 "upper": max(cfg.force_band.lower + 0.5, cfg.force_band.upper - 0.5),
             }
             weights = dict(cfg.cost_weights)
-            weights["task_height"] = float(weights.get("task_height", 16.0)) * 1.1
+            cur_h = float(weights.get("task_height", 16.0))
+            weights["task_height"] = min(MAX_HEIGHT_WEIGHT, cur_h * 1.05)
             revision.cost_weights = weights
             revision.recovery_mode = "reduce_normal_force_if_stalled"
 
@@ -174,15 +295,7 @@ class SemanticManager:
 
 
 def _evaluate_trigger(trigger: str, metrics: Dict[str, Any]) -> bool:
-    """Evaluate a phase trigger string against current metrics.
-
-    Supported triggers:
-      "initial"               — always True
-      "eef_near_box:<dist>"   — eef_to_contact_distance < dist
-      "wall_contact"          — wall_contact is True
-      "contact_force:<thresh>"— wall_contact AND |F_normal| > thresh
-      "height_above:<height>" — box_top_height > height
-    """
+    """Evaluate a phase trigger string against current metrics."""
     if trigger == "initial":
         return True
 

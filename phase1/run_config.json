@@ -1,0 +1,190 @@
+{
+  "task_name": "push_the_box_up_along_the_wall_while_maintaining_contact",
+  "scene_info": {
+    "box_position": [
+      0.0,
+      -0.055,
+      0.055
+    ],
+    "box_half_extents": [
+      0.08,
+      0.08,
+      0.08
+    ],
+    "wall_position": [
+      -0.14000004711050804,
+      0.2000005680445611,
+      -0.060000000000000005
+    ],
+    "wall_half_extents": [
+      0.45,
+      0.02,
+      0.5
+    ],
+    "eef_position": [
+      -0.14846466056582386,
+      -8.939910281987004e-18,
+      0.26127947572964033
+    ],
+    "wall_gap": 0.1550005680445611,
+    "box_top_height": 0.135
+  },
+  "semantic": {
+    "stiffness": {
+      "x": "HIGH",
+      "y": "LOW",
+      "z": "MEDIUM"
+    },
+    "task_frame_euler": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "phases": [
+      {
+        "name": "approach",
+        "trigger": "initial",
+        "cost_weights": {
+          "task_height": 2.0,
+          "task_contact": 8.0,
+          "task_pose": 18.0,
+          "energy": 0.0,
+          "force_upper": 0.0,
+          "force_lower": 0.0
+        },
+        "contact_strategy": {
+          "approach_face_axis": 1,
+          "approach_face_sign": -1.0,
+          "contact_standoff": 0.03,
+          "contact_vertical_offset_scale": 0.0
+        },
+        "force_band": {
+          "lower": 0.0,
+          "upper": 100.0
+        },
+        "goal": {
+          "target_height": 0.5
+        },
+        "action_prior": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "name": "push_to_wall",
+        "trigger": "eef_near_box:0.05",
+        "cost_weights": {
+          "task_height": 4.0,
+          "task_contact": 18.0,
+          "task_pose": 4.0,
+          "energy": 0.0,
+          "force_upper": 0.0,
+          "force_lower": 0.0
+        },
+        "contact_strategy": {
+          "approach_face_axis": 1,
+          "approach_face_sign": -1.0,
+          "contact_standoff": 0.03,
+          "contact_vertical_offset_scale": 0.0
+        },
+        "force_band": {
+          "lower": 0.0,
+          "upper": 100.0
+        },
+        "goal": {
+          "target_height": 0.5
+        },
+        "action_prior": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "name": "lift",
+        "trigger": "wall_contact",
+        "cost_weights": {
+          "task_height": 18.0,
+          "task_contact": 14.0,
+          "task_pose": 2.0,
+          "energy": 0.2,
+          "force_upper": 25.0,
+          "force_lower": 12.0
+        },
+        "contact_strategy": {
+          "approach_face_axis": 1,
+          "approach_face_sign": -1.0,
+          "contact_standoff": 0.02,
+          "contact_vertical_offset_scale": -0.5
+        },
+        "force_band": {
+          "lower": 15.0,
+          "upper": 35.0
+        },
+        "goal": {
+          "target_height": 0.5,
+          "gap_target": -0.03
+        },
+        "action_prior": [
+          0.0,
+          0.6,
+          0.4,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "recovery_hints": [
+      "re_establish_contact",
+      "reduce_normal_force_if_stalled"
+    ],
+    "active_phase": {
+      "force_band": {
+        "lower": 0.0,
+        "upper": 100.0
+      },
+      "goal": {
+        "target_height": 0.5
+      },
+      "cost_weights": {
+        "task_height": 2.0,
+        "task_contact": 8.0,
+        "task_pose": 18.0,
+        "energy": 0.0,
+        "force_upper": 0.0,
+        "force_lower": 0.0
+      },
+      "contact_strategy": {
+        "approach_face_axis": 1,
+        "approach_face_sign": -1.0,
+        "contact_standoff": 0.03,
+        "contact_vertical_offset_scale": 0.0
+      }
+    }
+  },
+  "K_init": [
+    [
+      200.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      10.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      50.0
+    ]
+  ]
+}

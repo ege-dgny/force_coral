@@ -26,9 +26,42 @@ class ContactStrategy:
     approach_face_sign: float = -1.0   # direction along axis
     contact_standoff: float = 0.03     # meters from face surface
     contact_vertical_offset_scale: float = 0.0  # fraction of half-extent
+    gripper_command: float = -1.0      # -1=open, +1=close
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class ContactHypothesis:
+    """Candidate contact parameterization scored online."""
+
+    contact_strategy: ContactStrategy
+    score: float
+    reason: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "contact_strategy": self.contact_strategy.to_dict(),
+            "score": float(self.score),
+            "reason": self.reason,
+        }
+
+
+@dataclasses.dataclass
+class ContactBelief:
+    """Lightweight contact mode belief used for guarded fallback."""
+
+    mode: str
+    confidence: float
+    uncertain_steps: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "confidence": float(self.confidence),
+            "uncertain_steps": int(self.uncertain_steps),
+        }
 
 
 @dataclasses.dataclass
@@ -135,6 +168,7 @@ def default_phases() -> List[TaskPhase]:
                 "task_height": 2.0,
                 "task_contact": 8.0,
                 "task_pose": 18.0,   # drive EEF to contact point
+                "task_lateral": 4.0, # prevent drift during approach
                 "energy": 0.0,       # no force terms pre-contact
                 "force_upper": 0.0,
                 "force_lower": 0.0,
@@ -153,6 +187,7 @@ def default_phases() -> List[TaskPhase]:
                 "task_height": 4.0,
                 "task_contact": 18.0,  # wall proximity dominates
                 "task_pose": 4.0,
+                "task_lateral": 20.0,  # prevent drift during push
                 "energy": 0.0,
                 "force_upper": 0.0,
                 "force_lower": 0.0,
@@ -168,21 +203,24 @@ def default_phases() -> List[TaskPhase]:
             name="lift",
             trigger="wall_contact",
             cost_weights={
-                "task_height": 18.0,    # lift dominates
-                "task_contact": 14.0,   # maintain wall contact
-                "task_pose": 2.0,       # EEF loosely tracks contact
-                "energy": 0.2,          # Eq.5 λ_E: stiffness-aware
-                "force_upper": 25.0,    # Eq.5 ρ: don't jam
-                "force_lower": 12.0,    # Eq.5 γ: maintain contact
+                "task_height": 30.0,    # lift is primary objective
+                "task_contact": 6.0,    # light wall contact (minimize friction)
+                "task_pose": 4.0,       # keep EEF near contact point
+                "task_lateral": 50.0,   # prevent lateral drift
+                "task_tilt": 20.0,      # prevent tipping
+                "energy": 0.1,          # Eq.5 λ_E: light stiffness penalty
+                "force_upper": 20.0,    # Eq.5 ρ: prevent jamming
+                "force_lower": 2.0,     # Eq.5 γ: very light contact maintenance
             },
             contact_strategy=ContactStrategy(
                 approach_face_axis=1, approach_face_sign=-1.0,
                 contact_standoff=0.02,
-                contact_vertical_offset_scale=-0.5,  # push from below center
+                contact_vertical_offset_scale=0.0,  # push at box center (reachable)
+                gripper_command=-1.0,  # open gripper (box too large to grasp)
             ),
-            force_band=ForceBand(lower=15.0, upper=35.0),
-            goal={"target_height": 0.50, "gap_target": -0.03},
-            action_prior=[0.0, 0.6, 0.4, 0.0, 0.0, 0.0],  # push into wall (y+) and up (z+)
+            force_band=ForceBand(lower=1.0, upper=15.0),
+            goal={"target_height": 0.50, "gap_target": 0.0},
+            action_prior=[0.0, 0.2, 0.8, 0.0, 0.0, 0.0],  # push into wall + lift
         ),
     ]
 
@@ -205,5 +243,6 @@ def default_physics_config() -> PhysicsConfig:
             approach_face_sign=first.contact_strategy.approach_face_sign,
             contact_standoff=first.contact_strategy.contact_standoff,
             contact_vertical_offset_scale=first.contact_strategy.contact_vertical_offset_scale,
+            gripper_command=first.contact_strategy.gripper_command,
         ),
     )

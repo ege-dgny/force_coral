@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -49,9 +49,22 @@ def compute_wall_gap(
     box_half_extents: np.ndarray,
     wall_pos: np.ndarray,
     wall_half_extents: np.ndarray,
+    box_rotmat: Optional[np.ndarray] = None,
 ) -> float:
+    """Gap between box front face and wall front face along y-axis.
+
+    When box_rotmat is provided, uses oriented bounding box projection
+    to correctly compute the box y-extent under rotation.
+    """
     wall_front_y = float(wall_pos[1] - wall_half_extents[1])
-    box_front_y = float(box_pos[1] + box_half_extents[1])
+    if box_rotmat is not None:
+        # OBB projection: box extent along world y-axis
+        rotmat = np.asarray(box_rotmat, dtype=np.float64)
+        half = np.asarray(box_half_extents, dtype=np.float64)
+        box_y_extent = float(np.abs(rotmat[1, :]) @ half)
+    else:
+        box_y_extent = float(box_half_extents[1])
+    box_front_y = float(box_pos[1]) + box_y_extent
     return float(wall_front_y - box_front_y)
 
 
@@ -61,22 +74,48 @@ def compute_approach_face_sign(
     box_pos: np.ndarray,
     face_axis: int = 1,
 ) -> float:
-    """Return +1 or -1 so that the chosen face points AWAY from the wall.
-
-    We want the robot to approach the face that faces the robot (opposite the wall).
-    The wall is in the +Y direction relative to the box. We pick the face_sign
-    such that the face normal in world coords points away from the wall.
-    """
-    # Wall direction in world frame (wall relative to box)
+    """Return +1 or -1 so that the chosen face points AWAY from the wall."""
     wall_dir = np.asarray(wall_pos[:3], dtype=np.float64) - np.asarray(box_pos[:3], dtype=np.float64)
-    # Face normal in world for face_sign=+1
     axis_vec = np.zeros(3, dtype=np.float64)
     axis_vec[face_axis] = 1.0
     face_normal_world = np.asarray(box_rotmat, dtype=np.float64) @ axis_vec
-    # If +1 face points toward wall (dot > 0), we want -1 (opposite face)
-    # If +1 face points away from wall (dot < 0), we want +1
     dot = float(np.dot(face_normal_world, wall_dir))
     return -1.0 if dot > 0 else 1.0
+
+
+def compute_best_approach_face(
+    box_rotmat: np.ndarray,
+    wall_pos: np.ndarray,
+    box_pos: np.ndarray,
+) -> tuple:
+    """Find which box face best faces AWAY from the wall.
+
+    Returns (face_axis, face_sign) for the face whose normal in world
+    coordinates has the largest negative dot product with the wall direction.
+    This dynamically adapts to box rotation — if the box rotates, the
+    approach face updates to whichever face now faces away from the wall.
+    """
+    rotmat = np.asarray(box_rotmat, dtype=np.float64)
+    wall_dir = np.asarray(wall_pos[:3], dtype=np.float64) - np.asarray(box_pos[:3], dtype=np.float64)
+    wall_dir_norm = wall_dir / max(np.linalg.norm(wall_dir), 1e-8)
+
+    best_axis = 1
+    best_sign = -1.0
+    best_dot = float("inf")  # most negative = best (points away from wall)
+
+    for axis in range(3):
+        axis_vec = np.zeros(3, dtype=np.float64)
+        axis_vec[axis] = 1.0
+        face_normal = rotmat @ axis_vec
+
+        for sign in [1.0, -1.0]:
+            dot = float(np.dot(sign * face_normal, wall_dir_norm))
+            if dot < best_dot:
+                best_dot = dot
+                best_axis = axis
+                best_sign = sign
+
+    return best_axis, best_sign
 
 
 def compute_wall_lift_task_cost(
@@ -88,6 +127,7 @@ def compute_wall_lift_task_cost(
     weights: Dict[str, float],
     gap_target: float = 0.0,
     box_tilt_deg: float = 0.0,
+    lateral_offset: float = 0.0,
 ) -> Dict[str, float]:
     """Geometric task cost terms for wall-lift.
 
@@ -97,20 +137,27 @@ def compute_wall_lift_task_cost(
 
     box_tilt_deg: deviation from upright in degrees (0 = perfect).
     Penalized to prevent tipping during friction-based lift.
+
+    lateral_offset: box x-position minus initial x-position (meters).
+    Penalizes lateral drift that degrades push angle to wall.
     """
     height_cost = max(0.0, float(target_height) - float(box_top_height)) ** 2
     contact_cost = max(0.0, float(wall_gap) - float(gap_target)) ** 2
     pose_cost = float(eef_to_contact_distance) ** 2
-    # Tilt penalty: penalize deviations beyond a threshold
-    tilt_threshold = 15.0  # degrees — allow minor tilt
-    tilt_cost = max(0.0, float(box_tilt_deg) - tilt_threshold) ** 2 / 1000.0
+    # Tilt penalty: penalize deviations beyond threshold
+    tilt_threshold = 10.0  # degrees
+    tilt_cost = max(0.0, float(box_tilt_deg) - tilt_threshold) ** 2 / 100.0
+    # Lateral stability: penalize drift from initial x-position
+    lateral_cost = float(lateral_offset) ** 2
     total = (
         float(weights.get("task_height", 14.0)) * height_cost
         + float(weights.get("task_contact", 18.0)) * contact_cost
         + float(weights.get("task_pose", 4.0)) * pose_cost
         + float(weights.get("task_tilt", 8.0)) * tilt_cost
+        + float(weights.get("task_lateral", 0.0)) * lateral_cost
     )
     return {
         "height": height_cost, "contact": contact_cost,
-        "pose": pose_cost, "tilt": tilt_cost, "total": total,
+        "pose": pose_cost, "tilt": tilt_cost, "lateral": lateral_cost,
+        "total": total,
     }

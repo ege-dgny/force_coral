@@ -5,6 +5,7 @@ Only external dependency: force_coral (LIBERO env + plugin registration).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -17,6 +18,8 @@ from force_coral.libero_ext.env_wrapper import SegmentationRenderEnv  # noqa: E4
 from force_coral.libero_ext.init_loader import load_init_bundle_by_name  # noqa: E402
 
 from FORTE.geometry import compute_box_face_anchor, compute_wall_gap  # noqa: E402
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _canonical_bddl(problem_folder: str, task_name: str) -> str:
@@ -67,7 +70,7 @@ class ObjectCentricWrapper:
 
     action_position_scale = 8.0
     action_rotation_scale = 0.5
-    gripper_command = -1.0
+    _gripper_command = -1.0
 
     def __init__(
         self,
@@ -100,12 +103,13 @@ class ObjectCentricWrapper:
             env.sim.model.geom_size[env.sim.model.body_geomadr[self.wall_body_id]],
             dtype=np.float64,
         )
+        self._sync_warned = False
 
     def step(self, action: np.ndarray) -> np.ndarray:
         action7 = np.zeros(7, dtype=np.float64)
         action7[:3] = self.action_position_scale * np.asarray(action[:3], dtype=np.float64)
         action7[3:6] = self.action_rotation_scale * np.asarray(action[3:6], dtype=np.float64)
-        action7[-1] = self.gripper_command
+        action7[-1] = self._gripper_command
         self.env.step(action7)
         return self.get_box_pos()
 
@@ -119,7 +123,10 @@ class ObjectCentricWrapper:
         return self.env.sim.data.body_xmat[self.box_body_id].reshape(3, 3).copy()
 
     def get_box_top_height(self) -> float:
-        return float(self.get_box_pos()[2] + self.box_half_extents[2])
+        """Top of oriented box along world z-axis."""
+        rotmat = self.get_box_rotmat()
+        z_extent = float(np.abs(rotmat[2, :]) @ self.box_half_extents)
+        return float(self.get_box_pos()[2] + z_extent)
 
     def get_eef_pos(self) -> np.ndarray:
         sid = self.env.sim.model.site_name2id(self.eef_site_name)
@@ -147,6 +154,7 @@ class ObjectCentricWrapper:
         return compute_wall_gap(
             self.get_box_pos(), self.box_half_extents,
             self.get_wall_pos(), self.wall_half_extents,
+            box_rotmat=self.get_box_rotmat(),
         )
 
     def has_wall_contact(self, tolerance: float = 0.005) -> bool:
@@ -183,8 +191,10 @@ class ObjectCentricWrapper:
                         real_env.sim.data.qvel[g._ref_gripper_joint_vel_indexes]
                     )
             self.env.sim.forward()
-        except Exception:
-            pass
+        except Exception as exc:
+            if not self._sync_warned:
+                LOGGER.warning("Robot sync from real env failed: %s", exc)
+                self._sync_warned = True
 
     def sync_box_from_real(self, real_env: Any) -> None:
         joint_name = "block_1_joint0"
@@ -193,5 +203,15 @@ class ObjectCentricWrapper:
             real_env.sim.data.body_xpos[self.box_body_id],
             real_env.sim.data.body_xquat[self.box_body_id],
         ])
-        self.env.sim.data.qpos[qpos_addr: qpos_addr + 7] = pose
+        self.update_inner_from_pose(pose)
+
+    def update_inner_from_pose(self, pose: np.ndarray, size: Optional[np.ndarray] = None) -> None:
+        """Apply observed object pose to inner world (CoRAL-style dual-world sync)."""
+        joint_name = "block_1_joint0"
+        qpos_addr, _ = self.env.sim.model.get_joint_qpos_addr(joint_name)
+        self.env.sim.data.qpos[qpos_addr: qpos_addr + 7] = np.asarray(pose, dtype=np.float64)
+        if size is not None:
+            geom_id = self.env.sim.model.body_geomadr[self.box_body_id]
+            self.env.sim.model.geom_size[geom_id] = np.asarray(size, dtype=np.float64)
+            self.box_half_extents = np.asarray(size, dtype=np.float64)
         self.env.sim.forward()

@@ -15,9 +15,6 @@ _worker_env = None
 _worker_wrapper = None
 
 
-_worker_action_multiplier = 1.0
-
-
 def _init_worker(
     controller: str,
     control_freq: int,
@@ -26,11 +23,11 @@ def _init_worker(
     task_name: str,
     wrapper_cls: Type[ObjectCentricWrapper],
     wrapper_kwargs: Dict[str, Any],
-    action_multiplier: float = 1.0,
+    action_mult: float = 10.0,
 ) -> None:
     del control_freq
     global _worker_env, _worker_wrapper, _worker_action_multiplier
-    _worker_action_multiplier = float(action_multiplier)
+    _worker_action_multiplier = action_mult
     _worker_env = build_inner_env(
         task_name=task_name, controller=controller,
         offscreen=True, gui=False,
@@ -39,7 +36,18 @@ def _init_worker(
     _worker_wrapper = wrapper_cls(_worker_env, **wrapper_kwargs)
 
 
+_worker_action_multiplier: float = 10.0
+
+
 def _evaluate_rollout(args: Any) -> float:
+    """Evaluate a rollout with matched action multiplier.
+
+    Both workers and main loop use the SAME multiplier so MPPI cost
+    is consistent with execution. The multiplier controls the
+    exploration/precision trade-off:
+    - Higher: faster robot movement, but less force magnitude control
+    - Lower: finer force control, but slower approach
+    """
     global _worker_env, _worker_wrapper, _worker_action_multiplier
     action_sequence, initial_state, runtime_data = args
     _worker_env.sim.set_state(initial_state)
@@ -103,7 +111,7 @@ class ParallelMPPI:
             initargs=(
                 controller, control_freq, init_idx, problem_folder,
                 task_name, self.wrapper_cls, self.wrapper_kwargs,
-                self.action_multiplier,
+                action_multiplier,
             ),
         )
         atexit.register(self.close)
@@ -112,42 +120,64 @@ class ParallelMPPI:
         self,
         runtime_data: Optional[Dict[str, Any]] = None,
         action_prior: Optional[np.ndarray] = None,
+        num_iters: int = 1,
     ) -> np.ndarray:
+        """MPPI with optional iterative refinement.
+
+        When num_iters > 1, runs multiple optimization passes. Each
+        iteration uses the previous best trajectory as the mean for
+        sampling, with progressively tighter noise. This implements
+        CEM-like refinement within MPPI.
+        """
         initial_state = self.envw.env.sim.get_state()
         scale = self.noise_scale / self.position_scale
 
-        # Base: noise around action_prior (if provided) or zero
         prior = np.zeros(6)
         if action_prior is not None:
             prior = np.asarray(action_prior, dtype=np.float64).ravel()[:6] * scale
 
-        # Fresh samples around prior
-        n_fresh = self.num_samples
-        noise = self.rng.normal(0, 0.5, size=(n_fresh, self.horizon, 6)) * scale
-        actions = np.clip(prior + noise, -scale, scale)
+        best_traj: Optional[np.ndarray] = None
+        best_cost = float("inf")
 
-        # Warm-start: shift previous best trajectory and add noise
-        if self._prev_best_traj is not None:
-            n_warm = max(1, int(self.num_samples * self.warm_start_fraction))
-            n_fresh = self.num_samples - n_warm
+        for iteration in range(max(1, int(num_iters))):
+            # Noise shrinks each iteration (exploration → exploitation)
+            iter_noise = 0.5 / (1.0 + 0.5 * iteration)
 
-            shifted = np.zeros_like(self._prev_best_traj)
-            shifted[:-1] = self._prev_best_traj[1:]
+            if iteration == 0 and self._prev_best_traj is not None:
+                # First iteration: warm-start from previous step
+                n_warm = max(1, int(self.num_samples * self.warm_start_fraction))
+                n_fresh = self.num_samples - n_warm
 
-            warm_actions = np.tile(shifted, (n_warm, 1, 1))
-            warm_noise = self.rng.normal(0, 0.15, size=warm_actions.shape) * scale
-            warm_actions = np.clip(warm_actions + warm_noise, -scale, scale)
+                shifted = np.zeros_like(self._prev_best_traj)
+                shifted[:-1] = self._prev_best_traj[1:]
 
-            fresh_noise = self.rng.normal(0, 0.5, size=(n_fresh, self.horizon, 6)) * scale
-            fresh_actions = np.clip(prior + fresh_noise, -scale, scale)
-            actions = np.concatenate([warm_actions, fresh_actions], axis=0)
+                warm_actions = np.tile(shifted, (n_warm, 1, 1))
+                warm_noise = self.rng.normal(0, 0.15, size=warm_actions.shape) * scale
+                warm_actions = np.clip(warm_actions + warm_noise, -scale, scale)
 
-        tasks = [(actions[i], initial_state, runtime_data) for i in range(len(actions))]
-        costs = self.pool.map(_evaluate_rollout, tasks)
-        best_idx = int(np.argmin(costs))
+                fresh_noise = self.rng.normal(0, iter_noise, size=(n_fresh, self.horizon, 6)) * scale
+                fresh_actions = np.clip(prior + fresh_noise, -scale, scale)
+                actions = np.concatenate([warm_actions, fresh_actions], axis=0)
+            elif best_traj is not None:
+                # Subsequent iterations: refine around current best
+                noise = self.rng.normal(0, iter_noise, size=(self.num_samples, self.horizon, 6)) * scale
+                actions = np.clip(best_traj + noise, -scale, scale)
+            else:
+                # First iteration, no warm-start
+                noise = self.rng.normal(0, iter_noise, size=(self.num_samples, self.horizon, 6)) * scale
+                actions = np.clip(prior + noise, -scale, scale)
 
-        self._prev_best_traj = actions[best_idx].copy()
-        return actions[best_idx, 0]
+            tasks = [(actions[i], initial_state, runtime_data) for i in range(len(actions))]
+            costs = self.pool.map(_evaluate_rollout, tasks)
+            iter_best_idx = int(np.argmin(costs))
+            iter_best_cost = float(costs[iter_best_idx])
+
+            if iter_best_cost < best_cost:
+                best_cost = iter_best_cost
+                best_traj = actions[iter_best_idx].copy()
+
+        self._prev_best_traj = best_traj
+        return best_traj[0]
 
     def close(self) -> None:
         try:
