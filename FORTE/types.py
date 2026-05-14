@@ -8,6 +8,9 @@ from typing import Any, Dict, List
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+GRIPPER_CLOSE_COMMAND = -1.0
+GRIPPER_OPEN_COMMAND = 1.0
+
 
 @dataclasses.dataclass
 class ForceBand:
@@ -26,7 +29,7 @@ class ContactStrategy:
     approach_face_sign: float = -1.0   # direction along axis
     contact_standoff: float = 0.03     # meters from face surface
     contact_vertical_offset_scale: float = 0.0  # fraction of half-extent
-    gripper_command: float = -1.0      # -1=open, +1=close
+    gripper_command: float = GRIPPER_OPEN_COMMAND  # +1=open, -1=close
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -224,7 +227,7 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
                 contact_strategy=ContactStrategy(
                     approach_face_axis=1, approach_face_sign=-1.0,
                     contact_standoff=0.01, contact_vertical_offset_scale=0.22,
-                    gripper_command=-1.0,
+                    gripper_command=GRIPPER_OPEN_COMMAND,
                 ),
                 force_band=ForceBand(lower=1.0, upper=18.0),
                 goal={"target_tilt_deg": 80.0, "target_height": 0.12, "gap_target": 0.0},
@@ -288,7 +291,7 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
                 approach_face_axis=1, approach_face_sign=-1.0,
                 contact_standoff=0.02,
                 contact_vertical_offset_scale=0.0,  # push at box center (reachable)
-                gripper_command=-1.0,  # open gripper (box too large to grasp)
+                    gripper_command=GRIPPER_OPEN_COMMAND,  # open gripper (box too large to grasp)
             ),
             force_band=ForceBand(lower=1.0, upper=15.0),
             goal={"target_height": 0.50, "gap_target": 0.0},
