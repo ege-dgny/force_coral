@@ -47,6 +47,10 @@ class ForteWrapper(ObjectCentricWrapper):
         if "semantic_config" in runtime_data:
             self.semantic_config = runtime_data["semantic_config"]
             cs = self.semantic_config.contact_strategy
+            # Honor semantic/contact-hypothesis face selection for this step.
+            # Recomputing the face here causes target jumps and contact drift.
+            self.approach_face_axis = int(cs.approach_face_axis)
+            self.approach_face_sign = float(cs.approach_face_sign)
             self.contact_standoff = float(cs.contact_standoff)
             self.contact_vertical_offset_scale = float(cs.contact_vertical_offset_scale)
             self._gripper_command = float(cs.gripper_command)
@@ -58,8 +62,6 @@ class ForteWrapper(ObjectCentricWrapper):
             self.box_top_height_init = float(runtime_data["box_top_height_init"])
         if not np.allclose(self.semantic_config.task_frame, np.eye(3)):
             self.task_frame = np.asarray(self.semantic_config.task_frame, dtype=np.float64)
-        # Dynamically pick the face that currently points away from wall
-        self._update_approach_face()
 
     def get_box_lift_height(self) -> float:
         """Top height relative to initial top height (starts near 0)."""
