@@ -53,6 +53,7 @@ class ForteWrapper(ObjectCentricWrapper):
             self.approach_face_sign = float(cs.approach_face_sign)
             self.contact_standoff = float(cs.contact_standoff)
             self.contact_vertical_offset_scale = float(cs.contact_vertical_offset_scale)
+            self.contact_world_z_offset = float(cs.contact_world_z_offset)
             self._gripper_command = float(cs.gripper_command)
         if "stiffness" in runtime_data:
             self.stiffness = runtime_data["stiffness"]

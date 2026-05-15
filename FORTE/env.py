@@ -81,8 +81,9 @@ class ObjectCentricWrapper:
         eef_site_name: str = "gripper0_grip_site",
         approach_face_axis: int = 1,
         approach_face_sign: float = -1.0,
-        contact_standoff: float = 0.03,
+        contact_standoff: float = 0.025,
         contact_vertical_offset_scale: float = 0.0,
+        contact_world_z_offset: float = -0.05,
     ) -> None:
         self.env = env
         self.box_body_name = box_body_name
@@ -92,6 +93,7 @@ class ObjectCentricWrapper:
         self.approach_face_sign = float(approach_face_sign)
         self.contact_standoff = float(contact_standoff)
         self.contact_vertical_offset_scale = float(contact_vertical_offset_scale)
+        self.contact_world_z_offset = float(contact_world_z_offset)
 
         self.box_body_id = env.sim.model.body_name2id(box_body_name)
         self.wall_body_id = env.sim.model.body_name2id(wall_body_name)
@@ -163,7 +165,9 @@ class ObjectCentricWrapper:
         return compute_box_face_anchor(
             self.get_box_pos(), self.get_box_rotmat(), self.box_half_extents,
             face_axis=self.approach_face_axis, face_sign=self.approach_face_sign,
-            standoff=0.0, vertical_offset_scale=self.contact_vertical_offset_scale,
+            standoff=0.0,
+            vertical_offset_scale=self.contact_vertical_offset_scale,
+            world_z_offset=self.contact_world_z_offset,
         )
 
     def get_desired_contact_world(self) -> np.ndarray:
@@ -172,6 +176,7 @@ class ObjectCentricWrapper:
             face_axis=self.approach_face_axis, face_sign=self.approach_face_sign,
             standoff=self.contact_standoff,
             vertical_offset_scale=self.contact_vertical_offset_scale,
+            world_z_offset=self.contact_world_z_offset,
         )
 
     def wall_gap(self) -> float:

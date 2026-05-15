@@ -159,7 +159,7 @@ def _draw_debug_overlay(
         f"h={info.get('box_height', 0):.3f}m",
         f"gap={info.get('wall_gap', 0):.4f}m",
         f"F_n={info.get('wall_normal_force', 0):.1f}N",
-        f"e2c={info.get('eef_to_contact', 0):.3f}m",
+        f"e2c={info.get('eef_to_contact_error', info.get('eef_to_contact', 0)):.3f}m",
         f"tilt={_max_tilt(info):.1f}deg",
         f"ctct={'Y' if info.get('contact_latched') else 'N'}",
     ]
@@ -286,6 +286,7 @@ class ArtifactManager:
         out.extend(self._plot_force_band())
         out.extend(self._plot_height())
         out.extend(self._plot_cost_breakdown())
+        out.extend(self._plot_contact_tracking())
         out.extend(self._plot_box_orientation())
         out.extend(self._plot_action_profile())
         out.extend(self._plot_phase_timeline())
@@ -346,6 +347,29 @@ class ArtifactManager:
         ax.legend(fontsize=7, ncol=3); fig.tight_layout()
         p = os.path.join(self.out_dir, "cost_breakdown.png")
         fig.savefig(p, dpi=120); plt.close(fig)
+        return [p]
+
+    def _plot_contact_tracking(self) -> List[str]:
+        steps = self._steps()
+        fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
+        eef_err = [float(r.get("eef_to_contact_error", r.get("eef_to_contact", 0.0))) for r in self.records]
+        switches = [int(r.get("face_switch_count", 0)) for r in self.records]
+
+        axes[0].plot(steps, eef_err, linewidth=1.3, label="eef_to_contact_error")
+        axes[0].axhline(0.09, color="red", linestyle="--", alpha=0.5, label="fallback threshold")
+        self._add_phase_bg(axes[0], steps)
+        axes[0].set_ylabel("error (m)")
+        axes[0].legend(fontsize=8)
+
+        axes[1].plot(steps, switches, linewidth=1.2, label="face_switch_count")
+        self._add_phase_bg(axes[1], steps)
+        axes[1].set_ylabel("count")
+        axes[1].set_xlabel("step")
+        axes[1].legend(fontsize=8)
+        fig.tight_layout()
+        p = os.path.join(self.out_dir, "contact_tracking.png")
+        fig.savefig(p, dpi=120)
+        plt.close(fig)
         return [p]
 
     def _plot_box_orientation(self) -> List[str]:
@@ -505,6 +529,10 @@ class ArtifactManager:
                 1 for r in self.records if r.get("drop", False)
             )),
             "peak_costs": peak_costs,
+            "max_eef_to_contact_error": float(max(
+                r.get("eef_to_contact_error", r.get("eef_to_contact", 0.0)) for r in self.records
+            )),
+            "face_switch_count": int(final.get("face_switch_count", 0)),
             "video": video_path,
             "plots": plots,
         }

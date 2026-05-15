@@ -388,6 +388,7 @@ def _parse_config_response(raw_text: str) -> PhysicsConfig:
             approach_face_sign=first.contact_strategy.approach_face_sign,
             contact_standoff=first.contact_strategy.contact_standoff,
             contact_vertical_offset_scale=first.contact_strategy.contact_vertical_offset_scale,
+            contact_world_z_offset=first.contact_strategy.contact_world_z_offset,
             gripper_command=first.contact_strategy.gripper_command,
         ),
     )
@@ -433,7 +434,22 @@ def _parse_phase(raw: Any, defaults: PhysicsConfig) -> TaskPhase:
         contact_vertical_offset_scale=float(
             cs_raw.get("contact_vertical_offset_scale", cs_def.contact_vertical_offset_scale)
         ),
+        contact_world_z_offset=float(
+            cs_raw.get("contact_world_z_offset", cs_def.contact_world_z_offset)
+        ),
         gripper_command=float(cs_raw.get("gripper_command", cs_def.gripper_command)),
+        metadata={
+            str(k): v
+            for k, v in cs_raw.items()
+            if k not in {
+                "approach_face_axis",
+                "approach_face_sign",
+                "contact_standoff",
+                "contact_vertical_offset_scale",
+                "contact_world_z_offset",
+                "gripper_command",
+            }
+        },
     )
 
     # Force band

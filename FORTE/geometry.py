@@ -36,12 +36,45 @@ def compute_box_face_anchor(
     face_sign: float = -1.0,
     standoff: float = 0.0,
     vertical_offset_scale: float = 0.0,
+    world_z_offset: float = 0.0,
 ) -> np.ndarray:
-    """World-space point anchored to a face of the oriented box."""
+    """World-space EEF target on a box face (body-frame face + optional world-Z shift).
+
+    ``vertical_offset_scale`` shifts along body +Z (rotates with the box).
+    ``world_z_offset`` shifts along world +Z (CoRAL uses -0.05 m for wall push).
+    """
     local = np.zeros(3, dtype=np.float64)
     local[face_axis] = face_sign * (half_extents[face_axis] + standoff)
     local[2] = vertical_offset_scale * half_extents[2]
-    return np.asarray(box_pos, dtype=np.float64) + np.asarray(box_rotmat, dtype=np.float64) @ local
+    anchor = np.asarray(box_pos, dtype=np.float64) + np.asarray(box_rotmat, dtype=np.float64) @ local
+    if world_z_offset != 0.0:
+        anchor = anchor.copy()
+        anchor[2] += float(world_z_offset)
+    return anchor
+
+
+def reconcile_contact_face_sign(
+    contact_strategy: "ContactStrategy",
+    box_rotmat: np.ndarray,
+    wall_pos: np.ndarray,
+    box_pos: np.ndarray,
+) -> "ContactStrategy":
+    """Keep VLM/LLM axis; fix sign so the face points away from the wall (robot side)."""
+    from FORTE.types import ContactStrategy
+
+    axis = int(contact_strategy.approach_face_axis)
+    sign = float(compute_approach_face_sign(box_rotmat, wall_pos, box_pos, face_axis=axis))
+    if np.sign(sign) == np.sign(float(contact_strategy.approach_face_sign)):
+        return contact_strategy
+    return ContactStrategy(
+        approach_face_axis=axis,
+        approach_face_sign=sign,
+        contact_standoff=contact_strategy.contact_standoff,
+        contact_vertical_offset_scale=contact_strategy.contact_vertical_offset_scale,
+        contact_world_z_offset=contact_strategy.contact_world_z_offset,
+        gripper_command=contact_strategy.gripper_command,
+        metadata=dict(contact_strategy.metadata),
+    )
 
 
 def compute_wall_gap(

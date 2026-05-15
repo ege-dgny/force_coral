@@ -24,9 +24,11 @@ class ContactStrategy:
 
     approach_face_axis: int = 1        # 0=x, 1=y, 2=z
     approach_face_sign: float = -1.0   # direction along axis
-    contact_standoff: float = 0.03     # meters from face surface
-    contact_vertical_offset_scale: float = 0.0  # fraction of half-extent
+    contact_standoff: float = 0.025    # meters from face (CoRAL uses 0.025 past -y face)
+    contact_vertical_offset_scale: float = 0.0  # body +Z fraction (prefer world_z for wall tasks)
+    contact_world_z_offset: float = -0.05  # world +Z shift (CoRAL state_cost z offset)
     gripper_command: float = -1.0  # keep CoRAL/FORTE convention used in this stack
+    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -61,6 +63,30 @@ class ContactBelief:
             "mode": self.mode,
             "confidence": float(self.confidence),
             "uncertain_steps": int(self.uncertain_steps),
+        }
+
+
+@dataclasses.dataclass
+class ContactSelectorState:
+    """Temporal state for contact-point selection and fallback decisions."""
+
+    active_strategy: ContactStrategy
+    last_switch_step: int = -1
+    switch_count: int = 0
+    high_error_steps: int = 0
+    fallback_active: bool = False
+    fallback_reason: str = ""
+    tracking_error_ema: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "active_strategy": self.active_strategy.to_dict(),
+            "last_switch_step": int(self.last_switch_step),
+            "switch_count": int(self.switch_count),
+            "high_error_steps": int(self.high_error_steps),
+            "fallback_active": bool(self.fallback_active),
+            "fallback_reason": self.fallback_reason,
+            "tracking_error_ema": float(self.tracking_error_ema),
         }
 
 
@@ -184,7 +210,8 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
                 },
                 contact_strategy=ContactStrategy(
                     approach_face_axis=1, approach_face_sign=-1.0,
-                    contact_standoff=0.03, contact_vertical_offset_scale=0.0,
+                    contact_standoff=0.025, contact_vertical_offset_scale=0.0,
+                    contact_world_z_offset=-0.05,
                 ),
                 force_band=ForceBand(lower=0.0, upper=100.0),
                 goal={"target_tilt_deg": 80.0, "target_height": 0.10},
@@ -203,7 +230,8 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
                 },
                 contact_strategy=ContactStrategy(
                     approach_face_axis=1, approach_face_sign=-1.0,
-                    contact_standoff=0.02, contact_vertical_offset_scale=0.15,
+                    contact_standoff=0.025, contact_vertical_offset_scale=0.0,
+                    contact_world_z_offset=-0.05,
                 ),
                 force_band=ForceBand(lower=0.0, upper=100.0),
                 goal={"target_tilt_deg": 80.0, "target_height": 0.10},
@@ -223,7 +251,8 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
                 },
                 contact_strategy=ContactStrategy(
                     approach_face_axis=1, approach_face_sign=-1.0,
-                    contact_standoff=0.01, contact_vertical_offset_scale=0.22,
+                    contact_standoff=0.025, contact_vertical_offset_scale=0.0,
+                    contact_world_z_offset=-0.05,
                     gripper_command=-1.0,
                 ),
                 force_band=ForceBand(lower=1.0, upper=18.0),
@@ -247,7 +276,8 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
             },
             contact_strategy=ContactStrategy(
                 approach_face_axis=1, approach_face_sign=-1.0,
-                contact_standoff=0.03, contact_vertical_offset_scale=0.0,
+                contact_standoff=0.025, contact_vertical_offset_scale=0.0,
+                contact_world_z_offset=-0.05,
             ),
             force_band=ForceBand(lower=0.0, upper=100.0),
             goal={"target_height": 0.50},
@@ -266,7 +296,8 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
             },
             contact_strategy=ContactStrategy(
                 approach_face_axis=1, approach_face_sign=-1.0,
-                contact_standoff=0.03, contact_vertical_offset_scale=0.0,
+                contact_standoff=0.025, contact_vertical_offset_scale=0.0,
+                contact_world_z_offset=-0.05,
             ),
             force_band=ForceBand(lower=0.0, upper=100.0),
             goal={"target_height": 0.50},
@@ -286,9 +317,10 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
             },
             contact_strategy=ContactStrategy(
                 approach_face_axis=1, approach_face_sign=-1.0,
-                contact_standoff=0.02,
-                contact_vertical_offset_scale=0.0,  # push at box center (reachable)
-                    gripper_command=-1.0,
+                contact_standoff=0.025,
+                contact_vertical_offset_scale=0.0,
+                contact_world_z_offset=-0.05,
+                gripper_command=-1.0,
             ),
             force_band=ForceBand(lower=1.0, upper=15.0),
             goal={"target_height": 0.50, "gap_target": 0.0},
@@ -315,6 +347,8 @@ def default_physics_config(task_name: str = "") -> PhysicsConfig:
             approach_face_sign=first.contact_strategy.approach_face_sign,
             contact_standoff=first.contact_strategy.contact_standoff,
             contact_vertical_offset_scale=first.contact_strategy.contact_vertical_offset_scale,
+            contact_world_z_offset=first.contact_strategy.contact_world_z_offset,
             gripper_command=first.contact_strategy.gripper_command,
+            metadata=dict(first.contact_strategy.metadata),
         ),
     )
