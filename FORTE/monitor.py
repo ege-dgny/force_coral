@@ -152,7 +152,11 @@ class SustainedForceMonitor:
         if force_band_upper is not None:
             self.upper = float(force_band_upper)
         v = float(value)
-        in_band = self.lower <= v <= self.upper
+        # Only treat the sample as "in band" once contact has been made AND
+        # the value is meaningfully non-zero. Pre-contact, lower=0 would make
+        # an idle F_n=0 readout count as in-band and trip the 20-step success.
+        meaningful = bool(wall_contact) and v >= max(0.25, 0.25 * max(self.lower, 1e-6))
+        in_band = meaningful and (self.lower <= v <= self.upper)
         if in_band:
             self.in_band_counter += 1
             self.steps_in_band_total += 1
