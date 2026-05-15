@@ -18,12 +18,36 @@ from force_coral.libero_ext.env_wrapper import SegmentationRenderEnv  # noqa: E4
 from force_coral.libero_ext.init_loader import load_init_bundle_by_name  # noqa: E402
 
 from FORTE.geometry import compute_box_face_anchor, compute_wall_gap  # noqa: E402
+from FORTE.types import infer_task_family  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
+
+# Box mass cap for friction-based wall_lift. OSC saturates ~7.5 N/axis;
+# with μ_wall=0.5, lifting mg ≤ μ·N means m ≤ 0.5·7.5/g ≈ 380 g in the
+# best case, but coupled control needs slack. 90 g is well inside budget.
+WALL_LIFT_BOX_MASS_KG = 0.09
+
+# Soft-wall contact dynamics for the force_hold task (foam pad, k≈200 N/m).
+FORCE_HOLD_WALL_OVERRIDES = {
+    "solref": "0.02 1",
+    "solimp": "0.85 0.92 0.001",
+}
 
 
 def _canonical_bddl(problem_folder: str, task_name: str) -> str:
     return force_coral.get_data_path("bddl_files") + f"/{problem_folder}/{task_name}.bddl"
+
+
+def _scale_body_mass(env: SegmentationRenderEnv, body_name: str, target_kg: float) -> None:
+    """Set a body's mass to ``target_kg`` and scale inertia tensor proportionally."""
+    bid = env.sim.model.body_name2id(body_name)
+    current = float(env.sim.model.body_mass[bid])
+    if current <= 1e-9 or target_kg <= 0.0:
+        return
+    scale = target_kg / current
+    env.sim.model.body_mass[bid] = target_kg
+    env.sim.model.body_inertia[bid] = env.sim.model.body_inertia[bid] * scale
+    env.sim.forward()
 
 
 def build_inner_env(
@@ -39,9 +63,21 @@ def build_inner_env(
     camera_heights: int = 240,
     camera_widths: int = 320,
 ) -> SegmentationRenderEnv:
-    overrides, state = load_init_bundle_by_name(
-        problem_folder=problem_folder, task_name=task_name, init_idx=init_idx,
-    )
+    task_family = infer_task_family(task_name)
+    try:
+        overrides, state = load_init_bundle_by_name(
+            problem_folder=problem_folder, task_name=task_name, init_idx=init_idx,
+        )
+    except (FileNotFoundError, AssertionError):
+        overrides, state = {}, None
+
+    # Task-family contact overrides applied at object-instantiation time.
+    if task_family == "force_hold":
+        wall_over = dict(overrides.get("wall2_1", {}))
+        for k, v in FORCE_HOLD_WALL_OVERRIDES.items():
+            wall_over.setdefault(k, v)
+        overrides = {**overrides, "wall2_1": wall_over}
+
     env = SegmentationRenderEnv(
         bddl_file_name=_canonical_bddl(problem_folder, task_name),
         robots=["Panda"],
@@ -61,7 +97,13 @@ def build_inner_env(
     env.robots[0].controller_config["control_ori"] = True
     env.seed(0)
     env.reset()
-    env.set_init_state(state)
+    if state is not None:
+        env.set_init_state(state)
+
+    # Force-budget fix: light box keeps friction-lift within OSC's reach.
+    if task_family == "wall_lift":
+        _scale_body_mass(env, "block_1_main", WALL_LIFT_BOX_MASS_KG)
+
     return env
 
 
