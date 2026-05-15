@@ -94,11 +94,46 @@ class Wall2(GenericAssetObject):
                 g.set("friction", str(friction))
 
 
-# Ensure both Wall and Wall2 are in OBJECTS_DICT even if the decorator
+@register_object
+class SpringButton(GenericAssetObject):
+    """Spring-loaded button with a single linear-slide DOF.
+
+    The MuJoCo joint stiffness can be overridden at construction time
+    (it patches the XML before the asset is loaded) so the spring_press
+    sweep ({50, 200, 800} N/m) needs only one BDDL.
+    """
+
+    def __init__(
+        self,
+        name="spring_button",
+        obj_name="spring_button",
+        joints=None,
+        stiffness=None,
+        damping=None,
+    ):
+        super().__init__(name=name, obj_name=obj_name, joints=[])
+        self.z_on_table = 0.0
+        self.rotation = (0.0, 0.0)
+        self.rotation_axis = "x"
+        if stiffness is not None or damping is not None:
+            self._patch_joint(stiffness=stiffness, damping=damping)
+
+    def _patch_joint(self, *, stiffness=None, damping=None):
+        body = self.get_obj()
+        for j in body.iter("joint"):
+            if j.get("name") and j.get("name").endswith("button_z"):
+                if stiffness is not None:
+                    j.set("stiffness", str(float(stiffness)))
+                if damping is not None:
+                    j.set("damping", str(float(damping)))
+
+
+# Ensure all static assets are in OBJECTS_DICT even if the decorator
 # registration is insufficient.
 try:
     from libero.libero.envs.base_object import OBJECTS_DICT as _OBJECTS_DICT
     _OBJECTS_DICT.setdefault("wall", Wall)
     _OBJECTS_DICT.setdefault("wall2", Wall2)
+    _OBJECTS_DICT.setdefault("spring_button", SpringButton)
 except Exception:
     pass

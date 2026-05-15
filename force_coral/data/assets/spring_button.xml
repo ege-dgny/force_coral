@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="spring_button">
+  <worldbody>
+    <body>
+      <body name="object" pos="0 0 0">
+        <body name="base" pos="0 0 0" quat="1 0 0 0">
+          <!--
+            Spring-loaded button. A slide joint along world +z gives the
+            cap a single DOF with a closed-form k (stiffness="...").
+            The joint qpos range is [-0.06, 0] so the button can compress
+            up to 6 cm. springref=0 means the rest position is at qpos=0
+            (fully extended). Increase or decrease stiffness for the
+            spring_press sweep ({50, 200, 800} N/m).
+          -->
+          <joint name="button_z" type="slide" axis="0 0 1"
+                 range="-0.06 0" stiffness="200" damping="5" springref="0"/>
+          <geom name="cap" type="cylinder" size="0.04 0.02"
+                pos="0 0 0.02" rgba="0.8 0.2 0.2 1" group="0"
+                friction="1 0.005 0.0001" density="200"/>
+          <geom name="cap_vis" type="cylinder" size="0.04 0.02"
+                pos="0 0 0.02" rgba="0.8 0.2 0.2 1" group="1"
+                conaffinity="0" contype="0"
+                friction="1 0.005 0.0001"/>
+        </body>
+      </body>
+
+      <site name="bottom_site" pos="0 0 0.00" rgba="0 0 0 0" size="0.005"/>
+      <site name="top_site"    pos="0 0 0.04" rgba="0 0 0 0" size="0.005"/>
+      <site name="horizontal_radius_site" pos="0.04 0 0.02" rgba="0 0 0 0" size="0.04"/>
+    </body>
+  </worldbody>
+</mujoco>
