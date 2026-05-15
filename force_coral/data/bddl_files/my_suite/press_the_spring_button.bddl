@@ -1,0 +1,30 @@
+(define (problem my_floor_manipulation)
+  (:domain robosuite)
+  (:language Press the spring button straight down and hold it at a target depth)
+
+  (:regions
+    (button_region
+      (:target floor)
+      (:ranges (
+        (-0.0500001 -0.0500001 -0.05 -0.05)
+      ))
+    )
+  )
+
+  (:fixtures
+    floor          - floor
+    spring_button_1 - spring_button
+  )
+
+  (:obj_of_interest
+    spring_button_1
+  )
+
+  (:init
+    (On spring_button_1 floor_button_region)
+  )
+
+  (:goal
+    (And (InContact spring_button_1 floor))
+  )
+)

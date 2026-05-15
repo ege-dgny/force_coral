@@ -62,6 +62,60 @@ def _scale_body_mass(env: SegmentationRenderEnv, body_name: str, target_kg: floa
     env.sim.forward()
 
 
+def _patch_geom_contact(
+    env: SegmentationRenderEnv,
+    body_name: str,
+    *,
+    solref: Optional[np.ndarray] = None,
+    solimp: Optional[np.ndarray] = None,
+) -> None:
+    """Override collision-geom solref/solimp on a body (works for fixtures
+    that LIBERO's plugin pipeline does not pass kwargs through to)."""
+    model = env.sim.model
+    bid = model.body_name2id(body_name)
+    start = int(model.body_geomadr[bid])
+    num = int(model.body_geomnum[bid])
+    for gid in range(start, start + num):
+        if int(model.geom_contype[gid]) == 0 and int(model.geom_conaffinity[gid]) == 0:
+            continue  # visual-only geom
+        # geom_solref is shape (2,); geom_solimp is shape (5,). User-supplied
+        # arrays may be shorter — only update the leading components, leaving
+        # the rest at MuJoCo's defaults.
+        if solref is not None:
+            arr = np.asarray(solref, dtype=np.float64).ravel()
+            existing = np.array(model.geom_solref[gid], dtype=np.float64)
+            n = min(len(arr), existing.size)
+            existing[:n] = arr[:n]
+            model.geom_solref[gid] = existing
+        if solimp is not None:
+            arr = np.asarray(solimp, dtype=np.float64).ravel()
+            existing = np.array(model.geom_solimp[gid], dtype=np.float64)
+            n = min(len(arr), existing.size)
+            existing[:n] = arr[:n]
+            model.geom_solimp[gid] = existing
+
+
+def _patch_slide_joint_stiffness(
+    env: SegmentationRenderEnv,
+    joint_name_suffix: str,
+    *,
+    stiffness: Optional[float] = None,
+    damping: Optional[float] = None,
+) -> None:
+    """Override a slide joint's stiffness/damping (spring_press sweep)."""
+    model = env.sim.model
+    for jid in range(model.njnt):
+        jname = model.joint_id2name(jid) or ""
+        if jname.endswith(joint_name_suffix):
+            if stiffness is not None:
+                model.jnt_stiffness[jid] = float(stiffness)
+            if damping is not None:
+                # damping lives in dof_damping, indexed by jnt_dofadr.
+                dof_adr = int(model.jnt_dofadr[jid])
+                model.dof_damping[dof_adr] = float(damping)
+            return
+
+
 def build_inner_env(
     *,
     task_name: str,
@@ -83,13 +137,6 @@ def build_inner_env(
         )
     except (FileNotFoundError, AssertionError):
         overrides, state = {}, None
-
-    # Task-family contact overrides applied at object-instantiation time.
-    if task_family == "force_hold":
-        wall_over = dict(overrides.get("wall2_1", {}))
-        for k, v in FORCE_HOLD_WALL_OVERRIDES.items():
-            wall_over.setdefault(k, v)
-        overrides = {**overrides, "wall2_1": wall_over}
 
     env = SegmentationRenderEnv(
         bddl_file_name=_canonical_bddl(problem_folder, task_name),
@@ -116,6 +163,16 @@ def build_inner_env(
     # Force-budget fix: light box keeps friction-lift within OSC's reach.
     if task_family == "wall_lift":
         _scale_body_mass(env, "block_1_main", WALL_LIFT_BOX_MASS_KG)
+
+    # Soft wall for force_hold. LIBERO loads wall2_1 as a fixture and does
+    # not thread object_overrides through to fixtures, so we patch the sim
+    # model directly. This must be applied to every env (real + workers).
+    if task_family == "force_hold":
+        _patch_geom_contact(
+            env, "wall2_1_main",
+            solref=np.fromstring(FORCE_HOLD_WALL_OVERRIDES["solref"], sep=" "),
+            solimp=np.fromstring(FORCE_HOLD_WALL_OVERRIDES["solimp"], sep=" "),
+        )
 
     return env
 
