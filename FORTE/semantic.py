@@ -105,6 +105,7 @@ class SemanticManager:
             contact_standoff=phase.contact_strategy.contact_standoff,
             contact_vertical_offset_scale=phase.contact_strategy.contact_vertical_offset_scale,
             gripper_command=phase.contact_strategy.gripper_command,
+            metadata=dict(phase.contact_strategy.metadata),
         )
 
     # ------------------------------------------------------------------

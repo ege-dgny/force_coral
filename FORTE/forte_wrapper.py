@@ -20,10 +20,10 @@ import numpy as np
 from FORTE.env import ObjectCentricWrapper
 from FORTE.geometry import (
     build_wall_lift_task_frame,
-    compute_approach_face_sign,
-    compute_best_approach_face,
+    compute_wall_contact_face,
     compute_wall_flip_task_cost,
     compute_wall_lift_task_cost,
+    coral_wall_contact_offset,
     world_to_task,
 )
 from FORTE.types import PhysicsConfig, default_physics_config
@@ -39,7 +39,7 @@ class ForteWrapper(ObjectCentricWrapper):
         self.stiffness: Optional[np.ndarray] = None
         self.box_x_init: float = float(self.get_box_pos()[0])
         self.box_top_height_init: float = float(self.get_box_top_height())
-        self._update_approach_face()
+        self._init_wall_contact_face()
 
     def configure_runtime(self, runtime_data: Optional[Dict[str, Any]]) -> None:
         if runtime_data is None:
@@ -78,13 +78,16 @@ class ForteWrapper(ObjectCentricWrapper):
         box_z = rot.as_matrix()[:, 2]
         return float(np.degrees(np.arccos(np.clip(abs(box_z[2]), 0, 1))))
 
-    def _update_approach_face(self) -> None:
-        """Pick box face that currently points away from wall."""
-        axis, sign = compute_best_approach_face(
+    def _init_wall_contact_face(self) -> None:
+        """Initialize contact face to CoRAL-aligned wall-facing side."""
+        axis, sign = compute_wall_contact_face(
             self.get_box_rotmat(), self.get_wall_pos(), self.get_box_pos(),
         )
-        self.approach_face_axis = axis
-        self.approach_face_sign = sign
+        standoff, vertical = coral_wall_contact_offset(self.box_half_extents)
+        self.approach_face_axis = int(axis)
+        self.approach_face_sign = float(sign)
+        self.contact_standoff = float(standoff)
+        self.contact_vertical_offset_scale = float(vertical)
 
     # -- Force helpers (for main loop) --
 

@@ -27,6 +27,7 @@ class ContactStrategy:
     contact_standoff: float = 0.03     # meters from face surface
     contact_vertical_offset_scale: float = 0.0  # fraction of half-extent
     gripper_command: float = -1.0  # keep CoRAL/FORTE convention used in this stack
+    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -61,6 +62,30 @@ class ContactBelief:
             "mode": self.mode,
             "confidence": float(self.confidence),
             "uncertain_steps": int(self.uncertain_steps),
+        }
+
+
+@dataclasses.dataclass
+class ContactSelectorState:
+    """Temporal state for contact-point selection and fallback decisions."""
+
+    active_strategy: ContactStrategy
+    last_switch_step: int = -1
+    switch_count: int = 0
+    high_error_steps: int = 0
+    fallback_active: bool = False
+    fallback_reason: str = ""
+    tracking_error_ema: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "active_strategy": self.active_strategy.to_dict(),
+            "last_switch_step": int(self.last_switch_step),
+            "switch_count": int(self.switch_count),
+            "high_error_steps": int(self.high_error_steps),
+            "fallback_active": bool(self.fallback_active),
+            "fallback_reason": self.fallback_reason,
+            "tracking_error_ema": float(self.tracking_error_ema),
         }
 
 
@@ -316,5 +341,6 @@ def default_physics_config(task_name: str = "") -> PhysicsConfig:
             contact_standoff=first.contact_strategy.contact_standoff,
             contact_vertical_offset_scale=first.contact_strategy.contact_vertical_offset_scale,
             gripper_command=first.contact_strategy.gripper_command,
+            metadata=dict(first.contact_strategy.metadata),
         ),
     )

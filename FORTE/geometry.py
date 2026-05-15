@@ -114,6 +114,9 @@ def compute_best_approach_face(
     coordinates has the largest negative dot product with the wall direction.
     This dynamically adapts to box rotation — if the box rotates, the
     approach face updates to whichever face now faces away from the wall.
+
+    For wall push/flip contact targeting, use compute_wall_contact_face()
+    instead — CoRAL pushes on the wall-facing side, not the far side.
     """
     rotmat = np.asarray(box_rotmat, dtype=np.float64)
     wall_dir = np.asarray(wall_pos[:3], dtype=np.float64) - np.asarray(box_pos[:3], dtype=np.float64)
@@ -136,6 +139,30 @@ def compute_best_approach_face(
                 best_sign = sign
 
     return best_axis, best_sign
+
+
+def compute_wall_contact_face(
+    box_rotmat: np.ndarray,
+    wall_pos: np.ndarray,
+    box_pos: np.ndarray,
+) -> tuple:
+    """Face used for wall push/flip contact (CoRAL-aligned).
+
+    CoRAL's MPPI targets the wall-facing box face (e.g. local -Y with a small
+    standoff), not the exterior face returned by compute_best_approach_face().
+    """
+    axis, sign = compute_best_approach_face(box_rotmat, wall_pos, box_pos)
+    return int(axis), float(-sign)
+
+
+def coral_wall_contact_offset(
+    half_extents: np.ndarray,
+) -> tuple[float, float]:
+    """Match CoRAL SimpleWrapper offsets: [0, -hy-0.025, -0.05] in body frame."""
+    half = np.asarray(half_extents, dtype=np.float64)
+    standoff = 0.025
+    vertical_offset_scale = float(-0.05 / max(half[2], 1e-6))
+    return standoff, vertical_offset_scale
 
 
 def compute_wall_lift_task_cost(
