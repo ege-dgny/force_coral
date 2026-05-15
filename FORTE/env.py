@@ -18,7 +18,6 @@ from force_coral.libero_ext.env_wrapper import SegmentationRenderEnv  # noqa: E4
 from force_coral.libero_ext.init_loader import load_init_bundle_by_name  # noqa: E402
 
 from FORTE.geometry import compute_box_face_anchor, compute_wall_gap  # noqa: E402
-from FORTE.types import GRIPPER_OPEN_COMMAND  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ class ObjectCentricWrapper:
 
     action_position_scale = 8.0
     action_rotation_scale = 0.5
-    _gripper_command = GRIPPER_OPEN_COMMAND
+    _gripper_command = -1.0
 
     def __init__(
         self,
