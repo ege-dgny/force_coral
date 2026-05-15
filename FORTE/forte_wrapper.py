@@ -349,6 +349,7 @@ class ForteWrapper(ObjectCentricWrapper):
             return self.get_eef_pos()
         pos = self.env.sim.data.body_xpos[bid].copy()
         # Cap is a cylinder with size=(r=0.04, half_height=0.02), placed at
-        # local pos (0,0,0.02). The top surface is roughly at body_z + 0.04.
-        pos[2] = float(pos[2]) + 0.04
+        # local pos (0, 0, 0.10) in the asset XML. Top surface = body_z + 0.12.
+        # Subtract the current compression depth so the target tracks the cap.
+        pos[2] = float(pos[2]) + 0.12 - self.get_button_depth()
         return pos
