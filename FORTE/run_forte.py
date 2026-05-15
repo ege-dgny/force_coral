@@ -33,7 +33,7 @@ from FORTE.geometry import (
     compute_best_approach_face,
     compute_box_face_anchor,
 )
-from FORTE.monitor import WallLiftTaskMonitor
+from FORTE.monitor import SustainedForceMonitor, WallLiftTaskMonitor
 from FORTE.mppi import ParallelMPPI
 from FORTE.semantic import SemanticManager
 from FORTE.types import (
@@ -56,9 +56,17 @@ LOGGER = logging.getLogger(__name__)
 
 TASK_NAME = "push_the_box_up_along_the_wall_while_maintaining_contact"
 WALL_FLIP_TASK_NAME = "push_the_box_to_the_wall_and_use_the_wall_as_a_support_to_flip_the_box_onto_its_side"
+FORCE_HOLD_TASK_NAME = "force_hold_against_compliant_wall"
+SPRING_PRESS_TASK_NAME = "press_the_spring_button"
 DEMO_TASKS = {
     "wall_lift": TASK_NAME,
     "wall_flip": WALL_FLIP_TASK_NAME,
+    "force_hold": FORCE_HOLD_TASK_NAME,
+    "spring_press": SPRING_PRESS_TASK_NAME,
+}
+# Task families that reuse an existing BDDL (different runtime config only).
+TASK_BDDL_ALIAS = {
+    FORCE_HOLD_TASK_NAME: TASK_NAME,  # reuse wall_lift scene, soft wall via overrides
 }
 
 
@@ -652,15 +660,24 @@ def run_forte(
 
     # ---- Task monitor ----
     monitor_cfg = _monitor_config_from_goal(semantic_config.goal)
-    monitor = WallLiftTaskMonitor(
-        target_height=_target_progress_from_goal(semantic_config.goal),
-        force_lower=semantic_config.force_band.lower,
-        force_upper=semantic_config.force_band.upper,
-        target_metric_name=monitor_cfg["target_metric_name"],
-        success_requires_contact=bool(monitor_cfg["success_requires_contact"]),
-        progress_eps=float(monitor_cfg["progress_eps"]),
-        drop_threshold=float(monitor_cfg["drop_threshold"]),
-    )
+    is_force_tracking = task_family in {"force_hold", "spring_press"}
+    if is_force_tracking:
+        monitor = SustainedForceMonitor(
+            lower=float(semantic_config.force_band.lower),
+            upper=float(semantic_config.force_band.upper),
+            required_steps=20,
+            target_metric_name="wall_normal_force" if task_family == "force_hold" else "button_force",
+        )
+    else:
+        monitor = WallLiftTaskMonitor(
+            target_height=_target_progress_from_goal(semantic_config.goal),
+            force_lower=semantic_config.force_band.lower,
+            force_upper=semantic_config.force_band.upper,
+            target_metric_name=monitor_cfg["target_metric_name"],
+            success_requires_contact=bool(monitor_cfg["success_requires_contact"]),
+            progress_eps=float(monitor_cfg["progress_eps"]),
+            drop_threshold=float(monitor_cfg["drop_threshold"]),
+        )
 
     # ---- MPPI ----
     mppi = ParallelMPPI(
@@ -755,19 +772,26 @@ def run_forte(
             new_phase = semantic.check_phase_transition(phase_metrics)
             if new_phase is not None:
                 print(f"[FORTE] === Phase transition → {new_phase} at step {step} ===")
-                monitor.stall_counter = 0
-                monitor.over_force_counter = 0
-                monitor.prev_height = None
+                if isinstance(monitor, WallLiftTaskMonitor):
+                    monitor.stall_counter = 0
+                    monitor.over_force_counter = 0
+                    monitor.prev_height = None
+                else:
+                    monitor.in_band_counter = 0
 
             # Sync monitor with active phase's force band
-            monitor.target_height = _target_progress_from_goal(semantic.active_config.goal)
-            monitor.force_lower = float(semantic.active_config.force_band.lower)
-            monitor.force_upper = float(semantic.active_config.force_band.upper)
-            monitor_cfg = _monitor_config_from_goal(semantic.active_config.goal)
-            monitor.target_metric_name = monitor_cfg["target_metric_name"]
-            monitor.progress_eps = float(monitor_cfg["progress_eps"])
-            monitor.drop_threshold = float(monitor_cfg["drop_threshold"])
-            monitor.success_requires_contact = bool(monitor_cfg["success_requires_contact"])
+            if isinstance(monitor, WallLiftTaskMonitor):
+                monitor.target_height = _target_progress_from_goal(semantic.active_config.goal)
+                monitor.force_lower = float(semantic.active_config.force_band.lower)
+                monitor.force_upper = float(semantic.active_config.force_band.upper)
+                monitor_cfg = _monitor_config_from_goal(semantic.active_config.goal)
+                monitor.target_metric_name = monitor_cfg["target_metric_name"]
+                monitor.progress_eps = float(monitor_cfg["progress_eps"])
+                monitor.drop_threshold = float(monitor_cfg["drop_threshold"])
+                monitor.success_requires_contact = bool(monitor_cfg["success_requires_contact"])
+            else:
+                monitor.lower = float(semantic.active_config.force_band.lower)
+                monitor.upper = float(semantic.active_config.force_band.upper)
 
             # 5) Contact-point hypotheses: propose -> filter -> rerank -> temporal select
             selection_base = semantic.active_config.contact_strategy
@@ -862,11 +886,25 @@ def run_forte(
             box_tilt_deg = real_wrapper.get_box_tilt_deg()
             progress_value = box_tilt_deg if _goal_uses_tilt(semantic.active_config.goal) else box_height_rel
             wall_contact = real_wrapper.has_wall_contact()
-            status = monitor.update(
-                box_height=progress_value,
-                normal_force=float(measured_force_task_post[0]),
-                wall_contact=wall_contact,
-            )
+            if isinstance(monitor, WallLiftTaskMonitor):
+                status = monitor.update(
+                    box_height=progress_value,
+                    normal_force=float(measured_force_task_post[0]),
+                    wall_contact=wall_contact,
+                )
+            else:
+                # SustainedForceMonitor: feed the tracked scalar metric.
+                if task_family == "spring_press":
+                    metric_value = float(real_wrapper.get_button_force())
+                else:
+                    metric_value = abs(float(measured_force_task_post[0]))
+                status = monitor.update(
+                    value=metric_value,
+                    wall_contact=wall_contact,
+                    force_band_lower=float(semantic.active_config.force_band.lower),
+                    force_band_upper=float(semantic.active_config.force_band.upper),
+                )
+                progress_value = metric_value
 
             # 11) Semantic revision (LLM re-query when use_vlm=True)
             revision = None

@@ -187,12 +187,67 @@ def infer_task_family(task_name: str) -> str:
     name = (task_name or "").lower()
     if "flip" in name and "wall" in name:
         return "wall_flip"
+    if "force_hold" in name or "constant_force" in name:
+        return "force_hold"
+    if "spring" in name or "press_the" in name:
+        return "spring_press"
     return "wall_lift"
 
 
 def default_phases(task_name: str = "") -> List[TaskPhase]:
-    """Default 3-phase plans for supported task families."""
+    """Default phase plans for supported task families."""
     task_family = infer_task_family(task_name)
+
+    if task_family == "force_hold":
+        # Two phases: drive the EEF to the box's -Y face, then maintain F_n in band.
+        # Hold-phase weights collapse to force terms only (paper Eq. 5 γ + ρ).
+        return [
+            TaskPhase(
+                name="approach",
+                trigger="initial",
+                cost_weights={
+                    "task_height": 0.0,
+                    "task_contact": 8.0,
+                    "task_pose": 18.0,
+                    "task_lateral": 4.0,
+                    "task_tilt": 5.0,
+                    "energy": 0.0,
+                    "force_upper": 0.0,
+                    "force_lower": 0.0,
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=1, approach_face_sign=-1.0,
+                    contact_standoff=0.02, contact_vertical_offset_scale=0.0,
+                    metadata={"world_offset": [0.0, 0.0, 0.0]},
+                ),
+                force_band=ForceBand(lower=0.0, upper=100.0),
+                goal={"target_force": 5.0, "force_band_lower": 3.0, "force_band_upper": 8.0},
+            ),
+            TaskPhase(
+                name="hold",
+                trigger="contact_force:0.5",
+                cost_weights={
+                    "task_height": 0.0,
+                    "task_contact": 4.0,
+                    "task_pose": 2.0,
+                    "task_lateral": 30.0,
+                    "task_tilt": 8.0,
+                    "energy": 0.2,         # λ_E: now contributes (soft wall → real δ)
+                    "force_upper": 30.0,   # ρ: hard cap on N
+                    "force_lower": 30.0,   # γ: contact maintenance (the FORTE story)
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=1, approach_face_sign=-1.0,
+                    contact_standoff=0.005, contact_vertical_offset_scale=0.0,
+                    gripper_command=-1.0,
+                    metadata={"world_offset": [0.0, 0.0, 0.0]},
+                ),
+                force_band=ForceBand(lower=3.0, upper=8.0),
+                goal={"target_force": 5.0, "force_band_lower": 3.0, "force_band_upper": 8.0},
+                action_prior=[0.0, 0.5, 0.0, 0.0, 0.0, 0.0],  # steady push into wall
+            ),
+        ]
+
     if task_family == "wall_flip":
         return [
             TaskPhase(

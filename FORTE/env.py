@@ -33,9 +33,21 @@ FORCE_HOLD_WALL_OVERRIDES = {
     "solimp": "0.85 0.92 0.001",
 }
 
+# Some FORTE task families reuse an existing BDDL/init bundle (only the
+# runtime config differs). The alias is consulted both for BDDL lookup and
+# for init-file resolution.
+_TASK_BDDL_ALIAS = {
+    "force_hold_against_compliant_wall": "push_the_box_up_along_the_wall_while_maintaining_contact",
+}
+
+
+def _resolve_asset_task(task_name: str) -> str:
+    return _TASK_BDDL_ALIAS.get(task_name, task_name)
+
 
 def _canonical_bddl(problem_folder: str, task_name: str) -> str:
-    return force_coral.get_data_path("bddl_files") + f"/{problem_folder}/{task_name}.bddl"
+    asset_task = _resolve_asset_task(task_name)
+    return force_coral.get_data_path("bddl_files") + f"/{problem_folder}/{asset_task}.bddl"
 
 
 def _scale_body_mass(env: SegmentationRenderEnv, body_name: str, target_kg: float) -> None:
@@ -64,9 +76,10 @@ def build_inner_env(
     camera_widths: int = 320,
 ) -> SegmentationRenderEnv:
     task_family = infer_task_family(task_name)
+    asset_task = _resolve_asset_task(task_name)
     try:
         overrides, state = load_init_bundle_by_name(
-            problem_folder=problem_folder, task_name=task_name, init_idx=init_idx,
+            problem_folder=problem_folder, task_name=asset_task, init_idx=init_idx,
         )
     except (FileNotFoundError, AssertionError):
         overrides, state = {}, None
