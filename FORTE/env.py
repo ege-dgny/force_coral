@@ -92,6 +92,7 @@ class ObjectCentricWrapper:
         self.approach_face_sign = float(approach_face_sign)
         self.contact_standoff = float(contact_standoff)
         self.contact_vertical_offset_scale = float(contact_vertical_offset_scale)
+        self._contact_world_offset: Optional[np.ndarray] = None
 
         self.box_body_id = env.sim.model.body_name2id(box_body_name)
         self.wall_body_id = env.sim.model.body_name2id(wall_body_name)
@@ -164,6 +165,7 @@ class ObjectCentricWrapper:
             self.get_box_pos(), self.get_box_rotmat(), self.box_half_extents,
             face_axis=self.approach_face_axis, face_sign=self.approach_face_sign,
             standoff=0.0, vertical_offset_scale=self.contact_vertical_offset_scale,
+            world_offset=self._contact_world_offset,
         )
 
     def get_desired_contact_world(self) -> np.ndarray:
@@ -172,6 +174,7 @@ class ObjectCentricWrapper:
             face_axis=self.approach_face_axis, face_sign=self.approach_face_sign,
             standoff=self.contact_standoff,
             vertical_offset_scale=self.contact_vertical_offset_scale,
+            world_offset=self._contact_world_offset,
         )
 
     def wall_gap(self) -> float:

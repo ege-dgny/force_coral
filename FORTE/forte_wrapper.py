@@ -54,6 +54,11 @@ class ForteWrapper(ObjectCentricWrapper):
             self.contact_standoff = float(cs.contact_standoff)
             self.contact_vertical_offset_scale = float(cs.contact_vertical_offset_scale)
             self._gripper_command = float(cs.gripper_command)
+            world_offset = cs.metadata.get("world_offset")
+            if world_offset is not None:
+                self._contact_world_offset = np.asarray(world_offset, dtype=np.float64).reshape(3)
+            else:
+                self._contact_world_offset = None
         if "stiffness" in runtime_data:
             self.stiffness = runtime_data["stiffness"]
         if "box_x_init" in runtime_data:

@@ -434,6 +434,17 @@ def _parse_phase(raw: Any, defaults: PhysicsConfig) -> TaskPhase:
             cs_raw.get("contact_vertical_offset_scale", cs_def.contact_vertical_offset_scale)
         ),
         gripper_command=float(cs_raw.get("gripper_command", cs_def.gripper_command)),
+        metadata={
+            str(k): v
+            for k, v in cs_raw.items()
+            if k not in {
+                "approach_face_axis",
+                "approach_face_sign",
+                "contact_standoff",
+                "contact_vertical_offset_scale",
+                "gripper_command",
+            }
+        },
     )
 
     # Force band

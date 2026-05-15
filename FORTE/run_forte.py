@@ -27,11 +27,22 @@ from FORTE.artifacts import ArtifactManager
 from FORTE.env import build_inner_env
 from FORTE.estimator import RiemannianStiffnessEstimator
 from FORTE.forte_wrapper import ForteWrapper
-from FORTE.geometry import build_wall_lift_task_frame, compute_box_face_anchor
+from FORTE.geometry import (
+    build_wall_lift_task_frame,
+    compute_approach_face_sign,
+    compute_best_approach_face,
+    compute_box_face_anchor,
+)
 from FORTE.monitor import WallLiftTaskMonitor
 from FORTE.mppi import ParallelMPPI
 from FORTE.semantic import SemanticManager
-from FORTE.types import ContactBelief, ContactHypothesis, ContactStrategy, infer_task_family
+from FORTE.types import (
+    ContactBelief,
+    ContactHypothesis,
+    ContactSelectorState,
+    ContactStrategy,
+    infer_task_family,
+)
 from FORTE.vlm import TaskPhysicsParser
 
 if platform.system() == "Darwin":
@@ -282,21 +293,71 @@ class _ObservedPoseProvider:
             return self._gt_pose(real_env, real_wrapper), "ground_truth_fallback"
 
 
-def _candidate_strategies(base: ContactStrategy) -> List[ContactStrategy]:
-    """Generate top-K contact candidates around semantic proposal."""
+def _world_offset_from_strategy(cs: ContactStrategy) -> Optional[np.ndarray]:
+    world_offset = cs.metadata.get("world_offset")
+    if world_offset is None:
+        return None
+    return np.asarray(world_offset, dtype=np.float64).reshape(3)
+
+
+def _desired_contact_from_strategy(wrapper: ForteWrapper, cs: ContactStrategy) -> np.ndarray:
+    return compute_box_face_anchor(
+        box_pos=wrapper.get_box_pos(),
+        box_rotmat=wrapper.get_box_rotmat(),
+        half_extents=wrapper.box_half_extents,
+        face_axis=cs.approach_face_axis,
+        face_sign=cs.approach_face_sign,
+        standoff=cs.contact_standoff,
+        vertical_offset_scale=cs.contact_vertical_offset_scale,
+        world_offset=_world_offset_from_strategy(cs),
+    )
+
+
+def _face_axis_sign_order(wrapper: ForteWrapper, base: ContactStrategy) -> List[Tuple[int, float]]:
+    """Ordered face candidates: semantic seed, geometry fallback, then wall-aware signs."""
+    box_rot = wrapper.get_box_rotmat()
+    wall_pos = wrapper.get_wall_pos()
+    box_pos = wrapper.get_box_pos()
+    geom_axis, geom_sign = compute_best_approach_face(box_rot, wall_pos, box_pos)
+    ordered: List[Tuple[int, float]] = [
+        (int(base.approach_face_axis), float(np.sign(base.approach_face_sign) or -1.0)),
+        (int(geom_axis), float(np.sign(geom_sign) or -1.0)),
+    ]
+    for axis in (0, 1, 2):
+        sign = compute_approach_face_sign(box_rot, wall_pos, box_pos, face_axis=axis)
+        ordered.append((axis, float(sign)))
+    seen = set()
+    out: List[Tuple[int, float]] = []
+    for axis, sign in ordered:
+        key = (int(axis), float(sign))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _candidate_strategies(wrapper: ForteWrapper, base: ContactStrategy) -> List[ContactStrategy]:
+    """Generate face-aware contact candidates around semantic proposal."""
     candidates: List[ContactStrategy] = []
-    standoff_candidates = [base.contact_standoff, base.contact_standoff + 0.01]
+    standoff_candidates = [
+        base.contact_standoff,
+        base.contact_standoff + 0.01,
+        base.contact_standoff - 0.01,
+    ]
     vertical_offsets = [base.contact_vertical_offset_scale, -0.2, 0.0, 0.2]
-    for standoff in standoff_candidates:
-        for vertical in vertical_offsets:
-            cs = ContactStrategy(
-                approach_face_axis=base.approach_face_axis,
-                approach_face_sign=base.approach_face_sign,
-                contact_standoff=float(np.clip(standoff, 0.0, 0.08)),
-                contact_vertical_offset_scale=float(np.clip(vertical, -0.5, 0.5)),
-                gripper_command=base.gripper_command,
-            )
-            candidates.append(cs)
+    for axis, sign in _face_axis_sign_order(wrapper, base):
+        for standoff in standoff_candidates:
+            for vertical in vertical_offsets:
+                cs = ContactStrategy(
+                    approach_face_axis=int(axis),
+                    approach_face_sign=float(sign),
+                    contact_standoff=float(np.clip(standoff, 0.0, 0.08)),
+                    contact_vertical_offset_scale=float(np.clip(vertical, -0.5, 0.5)),
+                    gripper_command=base.gripper_command,
+                    metadata=dict(base.metadata),
+                )
+                candidates.append(cs)
     seen = set()
     unique: List[ContactStrategy] = []
     for cs in candidates:
@@ -310,24 +371,35 @@ def _candidate_strategies(base: ContactStrategy) -> List[ContactStrategy]:
             continue
         seen.add(key)
         unique.append(cs)
-    return unique[:6]
+    return unique[:24]
 
 
 def _select_contact_hypothesis(
     wrapper: ForteWrapper,
+    base: ContactStrategy,
+    *,
     measured_force_normal: float,
+    force_band_lower: float,
+    force_band_upper: float,
 ) -> Tuple[ContactHypothesis, List[ContactHypothesis]]:
-    """Physics filter + force-consistency rerank."""
-    base = wrapper.semantic_config.contact_strategy
-    force_band = wrapper.semantic_config.force_band
-    band_mid = 0.5 * (float(force_band.lower) + float(force_band.upper))
+    """Physics filter + tracking-first rerank (semantic is a light tie-breaker)."""
+    band_mid = 0.5 * (float(force_band_lower) + float(force_band_upper))
+    raw_conf = base.metadata.get("confidence", 0.7)
+    try:
+        semantic_conf = float(raw_conf)
+    except (TypeError, ValueError):
+        semantic_conf = 0.7
+    semantic_conf = float(np.clip(semantic_conf, 0.0, 1.0))
+    geom_axis, geom_sign = compute_best_approach_face(
+        wrapper.get_box_rotmat(), wrapper.get_wall_pos(), wrapper.get_box_pos()
+    )
     scored: List[ContactHypothesis] = []
     eef_pos = wrapper.get_eef_pos()
     box_pos = wrapper.get_box_pos()
     box_rot = wrapper.get_box_rotmat()
     wall_gap = max(0.0, wrapper.wall_gap())
 
-    for cs in _candidate_strategies(base):
+    for cs in _candidate_strategies(wrapper, base):
         desired_contact = compute_box_face_anchor(
             box_pos=box_pos,
             box_rotmat=box_rot,
@@ -336,9 +408,12 @@ def _select_contact_hypothesis(
             face_sign=cs.approach_face_sign,
             standoff=cs.contact_standoff,
             vertical_offset_scale=cs.contact_vertical_offset_scale,
+            world_offset=_world_offset_from_strategy(cs),
         )
         eef_dist = float(np.linalg.norm(eef_pos - desired_contact))
-        feasible = (eef_dist <= 0.45) and (desired_contact[2] >= (box_pos[2] - 0.7 * wrapper.box_half_extents[2]))
+        feasible = (eef_dist <= 0.45) and (
+            desired_contact[2] >= (box_pos[2] - 0.8 * wrapper.box_half_extents[2])
+        )
         if not feasible:
             continue
         normal_push_proxy = abs(float(wrapper.task_frame[0] @ (desired_contact - eef_pos)))
@@ -347,7 +422,17 @@ def _select_contact_hypothesis(
         force_error = abs(normal_push_proxy - measured_push_proxy) + 0.5 * abs(
             normal_push_proxy - desired_push_proxy
         )
-        score = 1.5 * eef_dist + 4.0 * force_error + 2.0 * wall_gap
+        same_semantic_face = (
+            cs.approach_face_axis == base.approach_face_axis
+            and np.sign(cs.approach_face_sign) == np.sign(base.approach_face_sign)
+        )
+        same_geom_face = (
+            cs.approach_face_axis == int(geom_axis)
+            and np.sign(cs.approach_face_sign) == np.sign(geom_sign)
+        )
+        semantic_penalty = 0.0 if same_semantic_face else (0.12 * semantic_conf)
+        geom_bonus = -0.08 if (same_geom_face and eef_dist < 0.12) else 0.0
+        score = 3.0 * eef_dist + 0.8 * force_error + 0.3 * wall_gap + semantic_penalty + geom_bonus
         scored.append(ContactHypothesis(contact_strategy=cs, score=score, reason="pose+force_consistency"))
 
     if not scored:
@@ -355,7 +440,62 @@ def _select_contact_hypothesis(
         return fallback, [fallback]
 
     scored.sort(key=lambda item: item.score)
-    return scored[0], scored[:3]
+    return scored[0], scored
+
+
+def _best_hypothesis_for_face(
+    hypotheses: List[ContactHypothesis], axis: int, sign: float
+) -> Optional[ContactHypothesis]:
+    for hyp in hypotheses:
+        cs = hyp.contact_strategy
+        if cs.approach_face_axis == int(axis) and np.sign(cs.approach_face_sign) == np.sign(sign):
+            return hyp
+    return None
+
+
+def _temporal_contact_selection(
+    selector_state: ContactSelectorState,
+    best_hypothesis: ContactHypothesis,
+    ranked_hypotheses: List[ContactHypothesis],
+    *,
+    step: int,
+    dwell_steps: int = 6,
+) -> ContactHypothesis:
+    active = selector_state.active_strategy
+    best_cs = best_hypothesis.contact_strategy
+    same_face = (
+        active.approach_face_axis == best_cs.approach_face_axis
+        and np.sign(active.approach_face_sign) == np.sign(best_cs.approach_face_sign)
+    )
+    if same_face:
+        return best_hypothesis
+    can_switch = selector_state.last_switch_step < 0 or (step - selector_state.last_switch_step) >= dwell_steps
+    if can_switch:
+        selector_state.last_switch_step = step
+        selector_state.switch_count += 1
+        return best_hypothesis
+    keep_face_hyp = _best_hypothesis_for_face(
+        ranked_hypotheses, active.approach_face_axis, active.approach_face_sign
+    )
+    if keep_face_hyp is not None:
+        return keep_face_hyp
+    return ContactHypothesis(
+        contact_strategy=active,
+        score=best_hypothesis.score,
+        reason="dwell_hold_previous_face",
+    )
+
+
+def _geometric_fallback_strategy(wrapper: ForteWrapper, base: ContactStrategy) -> ContactStrategy:
+    axis, sign = compute_best_approach_face(wrapper.get_box_rotmat(), wrapper.get_wall_pos(), wrapper.get_box_pos())
+    return ContactStrategy(
+        approach_face_axis=int(axis),
+        approach_face_sign=float(sign),
+        contact_standoff=base.contact_standoff,
+        contact_vertical_offset_scale=base.contact_vertical_offset_scale,
+        gripper_command=base.gripper_command,
+        metadata={**dict(base.metadata), "fallback": "geometry"},
+    )
 
 
 def _update_contact_belief(
@@ -549,6 +689,16 @@ def run_forte(
         track_iters=fp_track_iters,
     )
     contact_belief = ContactBelief(mode="free", confidence=0.0, uncertain_steps=0)
+    selector_state = ContactSelectorState(
+        active_strategy=ContactStrategy(
+            approach_face_axis=semantic_config.contact_strategy.approach_face_axis,
+            approach_face_sign=semantic_config.contact_strategy.approach_face_sign,
+            contact_standoff=semantic_config.contact_strategy.contact_standoff,
+            contact_vertical_offset_scale=semantic_config.contact_strategy.contact_vertical_offset_scale,
+            gripper_command=semantic_config.contact_strategy.gripper_command,
+            metadata=dict(semantic_config.contact_strategy.metadata),
+        )
+    )
 
     with open(os.path.join(out_dir, "run_config.json"), "w") as f:
         scene_ser = {
@@ -586,12 +736,13 @@ def run_forte(
             else:
                 stiffness = None
 
-            # 3) Build metrics for phase transition check
+            # 3) Phase metrics from active semantic contact (not stale wrapper face)
             eef_pos = real_wrapper.get_eef_pos()
             box_height = real_wrapper.get_box_top_height()
             box_height_rel = real_wrapper.get_box_lift_height()
+            active_cs = semantic.active_config.contact_strategy
             eef_to_contact = float(np.linalg.norm(
-                eef_pos - real_wrapper.get_desired_contact_world()
+                eef_pos - _desired_contact_from_strategy(real_wrapper, active_cs)
             ))
             phase_metrics = {
                 "wall_contact": wall_contact,
@@ -600,7 +751,7 @@ def run_forte(
                 "eef_to_contact_distance": eef_to_contact,
             }
 
-            # 4) Check phase transition
+            # 4) Check phase transition (may update active_config.contact_strategy)
             new_phase = semantic.check_phase_transition(phase_metrics)
             if new_phase is not None:
                 print(f"[FORTE] === Phase transition → {new_phase} at step {step} ===")
@@ -618,16 +769,48 @@ def run_forte(
             monitor.drop_threshold = float(monitor_cfg["drop_threshold"])
             monitor.success_requires_contact = bool(monitor_cfg["success_requires_contact"])
 
-            # 5) Contact-point hypotheses: propose -> filter -> rerank
-            best_hypothesis, top_hypotheses = _select_contact_hypothesis(
-                real_wrapper, measured_force_normal=wall_normal_force
+            # 5) Contact-point hypotheses: propose -> filter -> rerank -> temporal select
+            selection_base = semantic.active_config.contact_strategy
+            best_hypothesis, ranked_hypotheses = _select_contact_hypothesis(
+                real_wrapper,
+                selection_base,
+                measured_force_normal=wall_normal_force,
+                force_band_lower=float(semantic.active_config.force_band.lower),
+                force_band_upper=float(semantic.active_config.force_band.upper),
             )
-            semantic.active_config.contact_strategy = best_hypothesis.contact_strategy
+            selected_hypothesis = _temporal_contact_selection(
+                selector_state,
+                best_hypothesis,
+                ranked_hypotheses,
+                step=step,
+            )
+            semantic.active_config.contact_strategy = selected_hypothesis.contact_strategy
+
+            # Tracking-first fallback gate: if EEF cannot track selected target for
+            # sustained steps, temporarily recover face from geometry.
+            selected_cs = semantic.active_config.contact_strategy
+            desired_now = _desired_contact_from_strategy(real_wrapper, selected_cs)
+            tracking_error = float(np.linalg.norm(eef_pos - desired_now))
+            selector_state.tracking_error_ema = 0.9 * selector_state.tracking_error_ema + 0.1 * tracking_error
+            high_error = tracking_error > 0.09
+            selector_state.high_error_steps = selector_state.high_error_steps + 1 if high_error else 0
+            selector_state.fallback_active = selector_state.high_error_steps >= 8
+            selector_state.fallback_reason = (
+                "high_tracking_error"
+                if selector_state.fallback_active
+                else ""
+            )
+            if selector_state.fallback_active:
+                semantic.active_config.contact_strategy = _geometric_fallback_strategy(
+                    real_wrapper, semantic.active_config.contact_strategy
+                )
+            selector_state.active_strategy = semantic.active_config.contact_strategy
+
             contact_belief = _update_contact_belief(
                 contact_belief,
                 wall_contact=wall_contact,
                 force_detected=force_detected,
-                best_score=best_hypothesis.score,
+                best_score=selected_hypothesis.score,
             )
 
             # 6) Runtime data for workers
@@ -636,6 +819,7 @@ def run_forte(
                 "stiffness": stiffness,
                 "box_x_init": box_x_init,
                 "box_top_height_init": box_top_height_init,
+                "contact_fallback_mode": selector_state.fallback_active,
             }
             real_wrapper.configure_runtime(runtime_data)
             inner_wrapper.configure_runtime(runtime_data)
@@ -657,7 +841,7 @@ def run_forte(
                 if dist > 0.02:
                     phase_prior[:3] = (direction / dist) * 0.8
 
-            fallback_active = contact_belief.uncertain_steps >= 5
+            fallback_active = contact_belief.uncertain_steps >= 5 or selector_state.fallback_active
             if fallback_active:
                 phase_prior[:3] = np.array([0.0, 0.15, 0.25], dtype=np.float64)
 
@@ -805,8 +989,25 @@ def run_forte(
                 "fallback_active": fallback_active,
                 # Contact inference
                 "selected_contact_hypothesis": best_hypothesis.to_dict(),
-                "top_contact_hypotheses": [h.to_dict() for h in top_hypotheses],
+                "applied_contact_hypothesis": ContactHypothesis(
+                    contact_strategy=selector_state.active_strategy,
+                    score=selected_hypothesis.score,
+                    reason=(
+                        selector_state.fallback_reason
+                        if selector_state.fallback_reason
+                        else selected_hypothesis.reason
+                    ),
+                ).to_dict(),
+                "top_contact_hypotheses": [h.to_dict() for h in ranked_hypotheses[:3]],
                 "contact_belief": contact_belief.to_dict(),
+                "contact_selector_state": selector_state.to_dict(),
+                "eef_to_contact_error": tracking_error,
+                "face_switch_count": int(selector_state.switch_count),
+                "selected_axis_sign": [
+                    int(selector_state.active_strategy.approach_face_axis),
+                    float(selector_state.active_strategy.approach_face_sign),
+                ],
+                "fallback_reason": selector_state.fallback_reason,
                 # Observation
                 "observed_pose": observed_pose.tolist(),
                 "observed_pose_source": observed_pose_source,

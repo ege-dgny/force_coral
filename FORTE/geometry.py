@@ -36,12 +36,20 @@ def compute_box_face_anchor(
     face_sign: float = -1.0,
     standoff: float = 0.0,
     vertical_offset_scale: float = 0.0,
+    world_offset: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """World-space point anchored to a face of the oriented box."""
+    """World-space point anchored to a face of the oriented box.
+
+    ``world_offset`` is applied in world frame after the body-frame face anchor
+    (CoRAL ``state_cost`` uses ``box_pos + [0, -half - 0.025, -0.05]``).
+    """
     local = np.zeros(3, dtype=np.float64)
     local[face_axis] = face_sign * (half_extents[face_axis] + standoff)
     local[2] = vertical_offset_scale * half_extents[2]
-    return np.asarray(box_pos, dtype=np.float64) + np.asarray(box_rotmat, dtype=np.float64) @ local
+    anchor = np.asarray(box_pos, dtype=np.float64) + np.asarray(box_rotmat, dtype=np.float64) @ local
+    if world_offset is not None:
+        anchor = anchor + np.asarray(world_offset, dtype=np.float64).reshape(3)
+    return anchor
 
 
 def compute_wall_gap(
