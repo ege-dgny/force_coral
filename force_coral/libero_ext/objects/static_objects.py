@@ -58,11 +58,40 @@ class Wall(GenericAssetObject):
 
 @register_object
 class Wall2(GenericAssetObject):
-    def __init__(self, name="wall2", obj_name="wall2", joints=None):
+    """Static wall. Optional `solref`/`solimp`/`friction` kwargs patch the
+    collision geom so the same asset can serve both rigid (wall_lift/flip)
+    and compliant (force_hold) tasks without duplicating XML."""
+
+    def __init__(
+        self,
+        name="wall2",
+        obj_name="wall2",
+        joints=None,
+        solref=None,
+        solimp=None,
+        friction=None,
+    ):
         super().__init__(name=name, obj_name=obj_name, joints=[])
         self.z_on_table = 0.0
         self.rotation = (0.0, 0.0)
         self.rotation_axis = "x"
+        if solref is not None or solimp is not None or friction is not None:
+            self._apply_contact_overrides(
+                solref=solref, solimp=solimp, friction=friction,
+            )
+
+    def _apply_contact_overrides(self, *, solref=None, solimp=None, friction=None):
+        body = self.get_obj()
+        # Only patch the collision geom (group "0"); leave visual geoms alone.
+        for g in body.iter("geom"):
+            if g.get("group") != "0":
+                continue
+            if solref is not None:
+                g.set("solref", str(solref))
+            if solimp is not None:
+                g.set("solimp", str(solimp))
+            if friction is not None:
+                g.set("friction", str(friction))
 
 
 # Ensure both Wall and Wall2 are in OBJECTS_DICT even if the decorator
