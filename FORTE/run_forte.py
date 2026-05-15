@@ -1151,6 +1151,9 @@ if __name__ == "__main__":
     p.add_argument("--samples", type=int, default=128)
     p.add_argument("--horizon", type=int, default=12)
     p.add_argument("--multiplier", type=float, default=10.0)
+    p.add_argument("--init-idx", type=int, default=0,
+                   help="Index into the task's .pruned_init bundle (different "
+                   "geometry/placement per index).")
     p.add_argument(
         "--spring-stiffness",
         type=float,
@@ -1174,6 +1177,7 @@ if __name__ == "__main__":
     print(f"[FORTE] Running demo='{args.demo}' task='{task_name}'")
     run_forte(
         task_name=task_name,
+        init_idx=args.init_idx,
         use_vlm=args.vlm,
         pose_source=args.pose_source,
         camera_name=args.camera,
