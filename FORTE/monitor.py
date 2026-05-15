@@ -146,17 +146,29 @@ class SustainedForceMonitor:
         wall_contact: bool = True,
         force_band_lower: Optional[float] = None,
         force_band_upper: Optional[float] = None,
+        phase_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         if force_band_lower is not None:
             self.lower = float(force_band_lower)
         if force_band_upper is not None:
             self.upper = float(force_band_upper)
         v = float(value)
-        # Only treat the sample as "in band" once contact has been made AND
-        # the value is meaningfully non-zero. Pre-contact, lower=0 would make
-        # an idle F_n=0 readout count as in-band and trip the 20-step success.
-        meaningful = bool(wall_contact) and v >= max(0.25, 0.25 * max(self.lower, 1e-6))
-        in_band = meaningful and (self.lower <= v <= self.upper)
+        # Success is only meaningful when:
+        #   - contact has been made,
+        #   - the band is tight (upper - lower ≤ 20 N excludes the wide-open
+        #     approach-phase placeholder [0, 100]),
+        #   - and the current phase is a hold/press/contact phase (so a brush
+        #     pass during approach doesn't count).
+        tight_band = (self.upper - self.lower) <= 20.0
+        is_target_phase = True if phase_name is None else any(
+            tok in phase_name.lower() for tok in ("hold", "press", "contact")
+        )
+        in_band = (
+            bool(wall_contact)
+            and tight_band
+            and is_target_phase
+            and self.lower <= v <= self.upper
+        )
         if in_band:
             self.in_band_counter += 1
             self.steps_in_band_total += 1

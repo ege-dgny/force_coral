@@ -921,6 +921,7 @@ def run_forte(
                     wall_contact=wall_contact,
                     force_band_lower=float(semantic.active_config.force_band.lower),
                     force_band_upper=float(semantic.active_config.force_band.upper),
+                    phase_name=semantic.current_phase.name,
                 )
                 progress_value = metric_value
 
