@@ -19,6 +19,7 @@ import numpy as np
 
 from FORTE.env import ObjectCentricWrapper
 from FORTE.geometry import (
+    build_spring_press_task_frame,
     build_wall_lift_task_frame,
     compute_approach_face_sign,
     compute_best_approach_face,
@@ -35,11 +36,15 @@ class ForteWrapper(ObjectCentricWrapper):
     def __init__(self, env: Any, **kwargs: Any) -> None:
         super().__init__(env, **kwargs)
         self.semantic_config: PhysicsConfig = default_physics_config()
-        self.task_frame = build_wall_lift_task_frame()
-        self.stiffness: Optional[np.ndarray] = None
         # spring_press scenes have no box/wall — skip the geometry-init calls.
         self.has_box = self.box_body_id is not None
         self.has_wall = self.wall_body_id is not None
+        # Task frame picks the axis the stiffness estimator treats as "normal".
+        self.task_frame = (
+            build_wall_lift_task_frame() if self.has_box
+            else build_spring_press_task_frame()
+        )
+        self.stiffness: Optional[np.ndarray] = None
         if self.has_box:
             self.box_x_init: float = float(self.get_box_pos()[0])
             self.box_top_height_init: float = float(self.get_box_top_height())

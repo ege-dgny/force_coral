@@ -23,6 +23,23 @@ def build_wall_lift_task_frame() -> np.ndarray:
     )
 
 
+def build_spring_press_task_frame() -> np.ndarray:
+    """Task frame for the spring_press task.
+
+    Rows = task axes in world coords:
+      x_task = press direction (+z world) — what the stiffness estimator
+               sees as the 'normal' so Σ̂_xx converges to the spring's k.
+      y_task = +y world (irrelevant lateral)
+      z_task = +x world (irrelevant lateral)
+    """
+    return np.asarray(
+        [[0.0, 0.0, 1.0],
+         [0.0, 1.0, 0.0],
+         [1.0, 0.0, 0.0]],
+        dtype=np.float64,
+    )
+
+
 def world_to_task(task_frame: np.ndarray, vector_world: np.ndarray) -> np.ndarray:
     return np.asarray(task_frame, dtype=np.float64) @ np.asarray(vector_world, dtype=np.float64).ravel()
 

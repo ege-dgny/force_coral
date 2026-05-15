@@ -290,6 +290,10 @@ class ArtifactManager:
         out.extend(self._plot_box_orientation())
         out.extend(self._plot_action_profile())
         out.extend(self._plot_phase_timeline())
+        # Spring-press headline plot: Σ̂_xx convergence to ground-truth k.
+        if any("button_stiffness" in r for r in self.records):
+            out.extend(self._plot_stiffness_convergence())
+            out.extend(self._plot_in_band_ratio())
         return out
 
     def _steps(self) -> List[int]:
@@ -440,6 +444,63 @@ class ArtifactManager:
         fig.tight_layout()
         p = os.path.join(self.out_dir, "phase_timeline.png")
         fig.savefig(p, dpi=120); plt.close(fig)
+        return [p]
+
+    def _plot_stiffness_convergence(self) -> List[str]:
+        """Σ̂_xx(t) vs ground-truth k — the spring_press headline figure."""
+        steps = self._steps()
+        # sigma_eigenvalues is the sorted spectrum of the 3x3 estimator matrix.
+        # The press-axis component dominates after a few contact steps; we plot
+        # the maximum eigenvalue as a proxy for Σ̂ along the press direction.
+        sigmas = [
+            (max(r["sigma_eigenvalues"]) if r.get("sigma_eigenvalues") else None)
+            for r in self.records
+        ]
+        sigmas = [v if v is not None else float("nan") for v in sigmas]
+        k_true = None
+        for r in self.records:
+            if r.get("button_stiffness"):
+                k_true = float(r["button_stiffness"])
+                break
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(steps, sigmas, linewidth=1.5, label=r"$\hat{\Sigma}_{\max}(t)$")
+        if k_true is not None:
+            ax.axhline(k_true, color="red", linestyle="--", linewidth=1.5,
+                       label=f"$k_{{true}}$ = {k_true:.0f} N/m")
+            ax.axhline(0.9 * k_true, color="red", linestyle=":", linewidth=0.8, alpha=0.6)
+            ax.axhline(1.1 * k_true, color="red", linestyle=":", linewidth=0.8, alpha=0.6)
+        self._add_phase_bg(ax, steps)
+        ax.set_xlabel("step")
+        ax.set_ylabel("stiffness (N/m)")
+        ax.set_title("Riemannian estimator convergence")
+        ax.legend(fontsize=9)
+        fig.tight_layout()
+        p = os.path.join(self.out_dir, "stiffness_convergence.png")
+        fig.savefig(p, dpi=120)
+        plt.close(fig)
+        return [p]
+
+    def _plot_in_band_ratio(self) -> List[str]:
+        """% of steps with F_n inside [F_min, F_max] over time."""
+        steps = self._steps()
+        cum_in = np.zeros(len(steps))
+        running = 0
+        for i, r in enumerate(self.records):
+            if r.get("in_band") or r.get("regime") == "in-band":
+                running += 1
+            cum_in[i] = running / float(i + 1)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(steps, cum_in * 100.0, linewidth=1.5)
+        ax.axhline(50, color="gray", linestyle=":", alpha=0.6)
+        self._add_phase_bg(ax, steps)
+        ax.set_xlabel("step")
+        ax.set_ylabel("% steps in band (cumulative)")
+        ax.set_ylim(0, 100)
+        ax.set_title("Force-band tracking ratio")
+        fig.tight_layout()
+        p = os.path.join(self.out_dir, "in_band_ratio.png")
+        fig.savefig(p, dpi=120)
+        plt.close(fig)
         return [p]
 
     def _add_phase_bg(self, ax: Any, steps: List[int]) -> None:

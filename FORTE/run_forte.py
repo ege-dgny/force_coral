@@ -803,11 +803,13 @@ def run_forte(
             # 5) Contact-point hypotheses: propose -> filter -> rerank -> temporal select
             # spring_press has no box/wall to choose between, so we skip the
             # face-reselection loop entirely and keep the semantic strategy.
+            tracking_error = 0.0
             if task_family == "spring_press":
                 selected_hypothesis = ContactHypothesis(
                     contact_strategy=semantic.active_config.contact_strategy,
                     score=0.0, reason="spring_press_static",
                 )
+                best_hypothesis = selected_hypothesis
                 ranked_hypotheses = [selected_hypothesis]
             else:
                 selection_base = semantic.active_config.contact_strategy
@@ -1037,6 +1039,13 @@ def run_forte(
                 "cost_force_upper": float(cost_terms["force_upper"]),
                 "cost_force_lower": float(cost_terms["force_lower"]),
                 "cost_total": float(cost_terms["total"]),
+                # spring_press telemetry (None for non-button scenes)
+                "button_depth": (
+                    float(cost_terms["button_depth"]) if "button_depth" in cost_terms else None
+                ),
+                "button_stiffness": (
+                    float(cost_terms["button_stiffness"]) if "button_stiffness" in cost_terms else None
+                ),
                 # MPPI
                 "action": action.tolist(),
                 "action_scale": action_scale,
