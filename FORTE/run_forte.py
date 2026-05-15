@@ -855,6 +855,25 @@ def run_forte(
                     )
             selector_state.active_strategy = semantic.active_config.contact_strategy
 
+            # Wall-lift post-contact heuristic: once the box is actually
+            # pressing the wall, the hypothesis selector tends to drift onto
+            # the upper portion of the face (producing the tipping pathology
+            # in Section IV-A). Lock the contact target to the canonical
+            # lower-face configuration so the friction-lift geometry is
+            # consistent and predictable. Explicit per-user authorization
+            # to use a small hardcoded heuristic here.
+            if task_family == "wall_lift" and contact_latched:
+                locked_cs = ContactStrategy(
+                    approach_face_axis=1,
+                    approach_face_sign=-1.0,
+                    contact_standoff=0.02,
+                    contact_vertical_offset_scale=0.0,
+                    gripper_command=-1.0,
+                    metadata={"world_offset": [0.0, 0.0, -0.05], "locked": True},
+                )
+                semantic.active_config.contact_strategy = locked_cs
+                selector_state.active_strategy = locked_cs
+
             contact_belief = _update_contact_belief(
                 contact_belief,
                 wall_contact=wall_contact,
@@ -893,6 +912,15 @@ def run_forte(
             fallback_active = contact_belief.uncertain_steps >= 5 or selector_state.fallback_active
             if fallback_active:
                 phase_prior[:3] = np.array([0.0, 0.15, 0.25], dtype=np.float64)
+
+            # Wall-lift post-contact heuristic: force a 45° push prior with
+            # equal wall-normal (+y world) and upward (+z world) components,
+            # so MPPI samples concentrate around a vector that simultaneously
+            # presses the box into the wall and slides it upward. Hardcoded
+            # per explicit user authorization.
+            if task_family == "wall_lift" and contact_latched:
+                phase_prior[:3] = np.array([0.0, 0.7, 0.7], dtype=np.float64)
+                phase_prior[3:] = 0.0
 
             action = mppi.compute_control(
                 runtime_data=runtime_data,
