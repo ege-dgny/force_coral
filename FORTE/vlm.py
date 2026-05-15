@@ -256,7 +256,9 @@ class TaskPhysicsParser:
         )
         raw = resp.output_text.strip()
         LOGGER.info("VLM init response: %s", raw[:500])
-        return _parse_config_response(raw)
+        config = _parse_config_response(raw)
+        config = _validate_spring_press_config(config, self._scene_info)
+        return config
 
     def _ensure_client(self) -> None:
         """Re-initialize OpenAI client if needed, using stored API key."""
@@ -329,7 +331,108 @@ class TaskPhysicsParser:
         )
         raw = resp.output_text.strip()
         LOGGER.info("VLM refinement response: %s", raw[:500])
-        return _parse_config_response(raw)
+        config = _parse_config_response(raw)
+        config = _validate_spring_press_config(config, self._scene_info)
+        return config
+
+
+# ---------------------------------------------------------------------------
+# Validators — clip VLM output to task-family invariants
+# ---------------------------------------------------------------------------
+
+def _validate_spring_press_config(
+    config: PhysicsConfig,
+    scene_info: Dict[str, Any],
+) -> PhysicsConfig:
+    """Force spring_press invariants the VLM tends to violate.
+
+    Concretely, the VLM has been observed to:
+      • set phase-2 trigger to `eef_near_box:0.05` (a wall_lift trigger that
+        measures distance to a box face that doesn't exist in this scene),
+      • set wildly off-band targets (e.g. F band [5, 50] for k=50, which
+        requires depth 10 cm > joint range 6 cm),
+      • leave the contact axis on +y (wall_lift's frame) instead of +z.
+
+    With ground-truth ``k`` in scene_info we can pin all three deterministically.
+    """
+    if scene_info.get("task_family") != "spring_press":
+        return config
+
+    k = float(scene_info.get("button_stiffness_N_per_m", 200.0))
+    # d* = 2 cm by default. Clamp to 50% of joint range so we stay clear of
+    # the hard stop at qpos=-0.06. (k=50 → d_star=2 cm → F* = 1 N.)
+    d_star = min(0.02, 0.025)
+    f_star = max(0.5, k * d_star)
+    band_lo = max(0.5, 0.7 * f_star)
+    band_hi = max(band_lo + 0.5, 1.3 * f_star)
+
+    LOGGER.info(
+        "spring_press validator: k=%.1f N/m → d*=%.3f m, F*=%.2f N, band=[%.2f, %.2f]",
+        k, d_star, f_star, band_lo, band_hi,
+    )
+
+    for i, phase in enumerate(config.phases):
+        is_press = (
+            i > 0
+            or any(tok in phase.name.lower() for tok in ("press", "hold", "contact"))
+        )
+
+        # Press axis must be world +z (face_axis=2, sign=+1) — VLM tends to
+        # parrot wall_lift's face_axis=1 here.
+        cs = phase.contact_strategy
+        if cs.approach_face_axis != 2 or cs.approach_face_sign < 0:
+            phase.contact_strategy = ContactStrategy(
+                approach_face_axis=2,
+                approach_face_sign=1.0,
+                contact_standoff=cs.contact_standoff,
+                contact_vertical_offset_scale=cs.contact_vertical_offset_scale,
+                gripper_command=cs.gripper_command,
+                metadata=dict(cs.metadata),
+            )
+
+        if is_press:
+            # Replace any wall_lift-shaped trigger with one that actually
+            # fires for this scene. `contact_force:0.5` checks button_depth
+            # AND wall_normal_force, both of which are wired for spring_press.
+            if not (phase.trigger.startswith("contact_force:") or phase.trigger == "initial"):
+                phase.trigger = "contact_force:0.5"
+            phase.force_band = ForceBand(lower=band_lo, upper=band_hi)
+            phase.goal = dict(phase.goal)
+            phase.goal["target_force"] = f_star
+            phase.goal["target_depth"] = d_star
+            phase.goal["force_band_lower"] = band_lo
+            phase.goal["force_band_upper"] = band_hi
+            # Press downward — z-component of action_prior in world frame.
+            if len(phase.action_prior) < 3 or phase.action_prior[2] > -0.3:
+                phase.action_prior = [0.0, 0.0, -0.6, 0.0, 0.0, 0.0]
+            # Force-tracking weights need to actually contribute.
+            if float(phase.cost_weights.get("force_lower", 0.0)) < 5.0:
+                phase.cost_weights["force_lower"] = 30.0
+            if float(phase.cost_weights.get("force_upper", 0.0)) < 5.0:
+                phase.cost_weights["force_upper"] = 30.0
+            if float(phase.cost_weights.get("energy", 0.0)) < 0.05:
+                phase.cost_weights["energy"] = 0.2
+        else:
+            # Approach phase: keep band wide; force terms zero so MPPI just
+            # drives the EEF to the cap without trying to maintain force yet.
+            phase.force_band = ForceBand(lower=0.0, upper=100.0)
+            phase.cost_weights["force_lower"] = 0.0
+            phase.cost_weights["force_upper"] = 0.0
+
+    # Sync the active-phase mirrors on PhysicsConfig to phase[0].
+    first = config.phases[0]
+    config.force_band = ForceBand(lower=first.force_band.lower, upper=first.force_band.upper)
+    config.goal = dict(first.goal)
+    config.cost_weights = dict(first.cost_weights)
+    config.contact_strategy = ContactStrategy(
+        approach_face_axis=first.contact_strategy.approach_face_axis,
+        approach_face_sign=first.contact_strategy.approach_face_sign,
+        contact_standoff=first.contact_strategy.contact_standoff,
+        contact_vertical_offset_scale=first.contact_strategy.contact_vertical_offset_scale,
+        gripper_command=first.contact_strategy.gripper_command,
+        metadata=dict(first.contact_strategy.metadata),
+    )
+    return config
 
 
 # ---------------------------------------------------------------------------
