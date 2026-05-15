@@ -1,8 +1,8 @@
-"""Task progress monitor for FORTE tasks."""
+"""Task progress monitors for FORTE tasks."""
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class WallLiftTaskMonitor:
@@ -104,4 +104,93 @@ class WallLiftTaskMonitor:
             "height_delta": height_delta,
             "wall_contact": contact_ok,
             "target_metric_name": self.target_metric_name,
+        }
+
+
+class SustainedForceMonitor:
+    """Success monitor for force-tracking tasks (force_hold, spring_press).
+
+    Success: a chosen scalar metric stays inside ``[lower, upper]`` for
+    ``required_steps`` consecutive steps. The metric can be raw wall-normal
+    force (force_hold) or a depth value mapped to an equivalent band
+    (spring_press: F = k·d so a depth band is just a force band divided by k).
+    """
+
+    def __init__(
+        self,
+        *,
+        lower: float,
+        upper: float,
+        required_steps: int = 20,
+        target_metric_name: str = "wall_normal_force",
+        drop_threshold: float = 1.0,
+    ) -> None:
+        self.lower = float(lower)
+        self.upper = float(upper)
+        self.required_steps = int(required_steps)
+        self.target_metric_name = str(target_metric_name)
+        self.drop_threshold = float(drop_threshold)
+        self.in_band_counter = 0
+        self.steps_in_band_total = 0
+        self.prev_value: Optional[float] = None
+        # Compatibility with WallLiftTaskMonitor's interface (run_forte
+        # reads these fields when toggling between monitors per phase).
+        self.target_height = 0.5 * (self.lower + self.upper)
+        self.force_lower = self.lower
+        self.force_upper = self.upper
+
+    def update(
+        self,
+        *,
+        value: float,
+        wall_contact: bool = True,
+        force_band_lower: Optional[float] = None,
+        force_band_upper: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if force_band_lower is not None:
+            self.lower = float(force_band_lower)
+        if force_band_upper is not None:
+            self.upper = float(force_band_upper)
+        v = float(value)
+        in_band = self.lower <= v <= self.upper
+        if in_band:
+            self.in_band_counter += 1
+            self.steps_in_band_total += 1
+        else:
+            self.in_band_counter = 0
+
+        delta = 0.0 if self.prev_value is None else v - self.prev_value
+        self.prev_value = v
+
+        success = self.in_band_counter >= self.required_steps
+        drop = (
+            self.prev_value is not None
+            and v < self.lower
+            and abs(delta) > self.drop_threshold
+        )
+        # No stall concept for force_hold — the value is supposed to be flat.
+        regime = "in-band" if in_band else ("under-force" if v < self.lower else "over-force")
+        reason = "ok"
+        if success:
+            reason = "success"
+        elif drop:
+            reason = "drop"
+        elif not in_band:
+            reason = "out_of_band"
+
+        return {
+            "success": success,
+            "drop": drop,
+            "stall": False,
+            "contact_lost": (v < self.lower * 0.5),
+            "repeated_over_force": (v > self.upper * 1.2),
+            "reason": reason,
+            "regime": regime,
+            "value": v,
+            "in_band": in_band,
+            "in_band_counter": int(self.in_band_counter),
+            "steps_in_band_total": int(self.steps_in_band_total),
+            "wall_contact": bool(wall_contact),
+            "target_metric_name": self.target_metric_name,
+            "height_delta": float(delta),
         }
