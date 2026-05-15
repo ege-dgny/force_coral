@@ -28,6 +28,7 @@ from FORTE.env import build_inner_env
 from FORTE.estimator import RiemannianStiffnessEstimator
 from FORTE.forte_wrapper import ForteWrapper
 from FORTE.geometry import (
+    build_spring_press_task_frame,
     build_wall_lift_task_frame,
     compute_approach_face_sign,
     compute_best_approach_face,
@@ -643,7 +644,13 @@ def run_forte(
         image=first_frame, task_prompt=task_name.replace("_", " "), scene_info=scene_info,
     )
     if np.allclose(semantic_config.task_frame, np.eye(3)):
-        semantic_config.task_frame = build_wall_lift_task_frame()
+        # Pick the task frame that puts the relevant force axis on task[0].
+        # Otherwise wall_normal_force ≡ 0 for spring_press and contact_force
+        # phase triggers never fire.
+        if task_family == "spring_press":
+            semantic_config.task_frame = build_spring_press_task_frame()
+        else:
+            semantic_config.task_frame = build_wall_lift_task_frame()
 
     print(f"[FORTE] PhysicsConfig: {json.dumps(semantic_config.to_dict(), indent=2)}")
     print(f"[FORTE] Phase plan: {[p.name for p in semantic_config.phases]}")
