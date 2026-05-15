@@ -24,7 +24,10 @@
     (On spring_button_1 floor_button_region)
   )
 
+  ;; BDDL goal is a placeholder — FORTE's SustainedForceMonitor scores
+  ;; success at the run level. (True ...) trivially passes; ignore_done=True
+  ;; in build_inner_env prevents premature termination.
   (:goal
-    (And (InContact spring_button_1 floor))
+    (And (True spring_button_1))
   )
 )
