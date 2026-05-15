@@ -198,6 +198,57 @@ def default_phases(task_name: str = "") -> List[TaskPhase]:
     """Default phase plans for supported task families."""
     task_family = infer_task_family(task_name)
 
+    if task_family == "spring_press":
+        # Two phases: approach the button cap, then press_hold at target force.
+        # Target depth d* and stiffness k together set the band: F* = k·d*.
+        # k=200 N/m and d*=2 cm → F* ≈ 4 N → band [3, 5] N.
+        return [
+            TaskPhase(
+                name="approach",
+                trigger="initial",
+                cost_weights={
+                    "task_height": 0.0,
+                    "task_contact": 0.0,   # no wall in this scene
+                    "task_pose": 18.0,     # drive EEF to button cap
+                    "task_lateral": 8.0,
+                    "task_tilt": 0.0,
+                    "energy": 0.0,
+                    "force_upper": 0.0,
+                    "force_lower": 0.0,
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=2, approach_face_sign=1.0,
+                    contact_standoff=0.02, contact_vertical_offset_scale=0.0,
+                ),
+                force_band=ForceBand(lower=0.0, upper=100.0),
+                goal={"target_force": 4.0, "target_depth": 0.02,
+                      "force_band_lower": 3.0, "force_band_upper": 5.0},
+            ),
+            TaskPhase(
+                name="press_hold",
+                trigger="contact_force:0.5",
+                cost_weights={
+                    "task_height": 0.0,
+                    "task_contact": 0.0,
+                    "task_pose": 2.0,
+                    "task_lateral": 12.0,
+                    "task_tilt": 0.0,
+                    "energy": 0.2,
+                    "force_upper": 30.0,
+                    "force_lower": 30.0,
+                },
+                contact_strategy=ContactStrategy(
+                    approach_face_axis=2, approach_face_sign=1.0,
+                    contact_standoff=0.0, contact_vertical_offset_scale=0.0,
+                    gripper_command=-1.0,
+                ),
+                force_band=ForceBand(lower=3.0, upper=5.0),
+                goal={"target_force": 4.0, "target_depth": 0.02,
+                      "force_band_lower": 3.0, "force_band_upper": 5.0},
+                action_prior=[0.0, 0.0, -0.6, 0.0, 0.0, 0.0],  # press down
+            ),
+        ]
+
     if task_family == "force_hold":
         # Two phases: drive the EEF to the box's -Y face, then maintain F_n in band.
         # Hold-phase weights collapse to force terms only (paper Eq. 5 γ + ρ).

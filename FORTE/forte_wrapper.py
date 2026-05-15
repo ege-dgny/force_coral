@@ -37,9 +37,17 @@ class ForteWrapper(ObjectCentricWrapper):
         self.semantic_config: PhysicsConfig = default_physics_config()
         self.task_frame = build_wall_lift_task_frame()
         self.stiffness: Optional[np.ndarray] = None
-        self.box_x_init: float = float(self.get_box_pos()[0])
-        self.box_top_height_init: float = float(self.get_box_top_height())
-        self._update_approach_face()
+        # spring_press scenes have no box/wall — skip the geometry-init calls.
+        self.has_box = self.box_body_id is not None
+        self.has_wall = self.wall_body_id is not None
+        if self.has_box:
+            self.box_x_init: float = float(self.get_box_pos()[0])
+            self.box_top_height_init: float = float(self.get_box_top_height())
+        else:
+            self.box_x_init = 0.0
+            self.box_top_height_init = 0.0
+        if self.has_box and self.has_wall:
+            self._update_approach_face()
 
     def configure_runtime(self, runtime_data: Optional[Dict[str, Any]]) -> None:
         if runtime_data is None:
@@ -74,6 +82,8 @@ class ForteWrapper(ObjectCentricWrapper):
 
     def get_box_tilt_deg(self) -> float:
         """Absolute tilt from upright in degrees (0=upright, 90=on side)."""
+        if not self.has_box:
+            return 0.0
         from scipy.spatial.transform import Rotation as R_conv
 
         box_quat_wxyz = self.get_box_quat()
@@ -82,6 +92,42 @@ class ForteWrapper(ObjectCentricWrapper):
         )
         box_z = rot.as_matrix()[:, 2]
         return float(np.degrees(np.arccos(np.clip(abs(box_z[2]), 0, 1))))
+
+    # -- Override env-level accessors for the no-box spring_press scene --
+
+    def get_wrench_world(self) -> np.ndarray:
+        if self.has_box:
+            return super().get_wrench_world()
+        # Synthesize a +z wrench from the spring force F = k·d.
+        F_z = self.get_button_force()
+        return np.asarray([0.0, 0.0, F_z, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    def wall_gap(self) -> float:
+        if self.has_box and self.has_wall:
+            return super().wall_gap()
+        # No wall in the scene: treat "gap" as how far the EEF is above the
+        # button cap (positive when above, used for the contact_force trigger).
+        eef_z = float(self.get_eef_pos()[2])
+        cap_z = float(self._spring_press_button_top()[2])
+        return max(0.0, eef_z - cap_z)
+
+    def has_wall_contact(self, tolerance: float = 0.005) -> bool:
+        if self.has_box and self.has_wall:
+            return super().has_wall_contact(tolerance=tolerance)
+        return self.get_button_depth() > 1e-3
+
+    def get_desired_contact_world(self) -> np.ndarray:
+        if self.has_box:
+            return super().get_desired_contact_world()
+        # spring_press: target = button cap top (+ standoff in +z direction).
+        target = self._spring_press_button_top()
+        target[2] += float(self.contact_standoff)
+        return target
+
+    def get_contact_anchor_world(self) -> np.ndarray:
+        if self.has_box:
+            return super().get_contact_anchor_world()
+        return self._spring_press_button_top()
 
     def _update_approach_face(self) -> None:
         """Pick box face that currently points away from wall."""
@@ -109,6 +155,32 @@ class ForteWrapper(ObjectCentricWrapper):
         force_task = world_to_task(self.task_frame, self.get_wrench_world()[:3])
         return abs(float(force_task[0]))
 
+    # -- spring_press helpers (slide joint on button) --
+
+    def get_button_depth(self, joint_suffix: str = "button_z") -> float:
+        """Compression depth in meters (positive when pressed in)."""
+        model = self.env.sim.model
+        data = self.env.sim.data
+        for jid in range(model.njnt):
+            jname = model.joint_id2name(jid) or ""
+            if jname.endswith(joint_suffix):
+                qpos_adr = int(model.jnt_qposadr[jid])
+                # qpos is negative when pressed (range [-0.06, 0]); flip sign.
+                return float(-data.qpos[qpos_adr])
+        return 0.0
+
+    def get_button_stiffness(self, joint_suffix: str = "button_z") -> float:
+        model = self.env.sim.model
+        for jid in range(model.njnt):
+            jname = model.joint_id2name(jid) or ""
+            if jname.endswith(joint_suffix):
+                return float(model.jnt_stiffness[jid])
+        return 0.0
+
+    def get_button_force(self) -> float:
+        """Reaction force magnitude from the button spring: F = k·d."""
+        return self.get_button_stiffness() * self.get_button_depth()
+
     # -- Cost function --
 
     def rollout_cost(self) -> float:
@@ -124,6 +196,11 @@ class ForteWrapper(ObjectCentricWrapper):
         """Return the exact per-term costs used by rollout_cost()."""
         weights = self.semantic_config.cost_weights
         goal = self.semantic_config.goal
+
+        # spring_press has no box/wall; cost is built from button depth.
+        if not self.has_box:
+            return self._compute_spring_press_terms(weights=weights, goal=goal)
+
         gap_target = float(goal.get("gap_target", 0.0))
         tilt_deg = self.get_box_tilt_deg()
         lateral_offset = float(self.get_box_pos()[0]) - self.box_x_init
@@ -198,3 +275,75 @@ class ForteWrapper(ObjectCentricWrapper):
             "lateral_term": float(task_terms["lateral"]),
             "total": total,
         }
+
+    def _compute_spring_press_terms(
+        self, *, weights: Dict[str, float], goal: Dict[str, Any],
+    ) -> Dict[str, float]:
+        """Cost terms for the spring_press task family.
+
+        Eq. 5 reduces to a 1-D problem: F = k·d. We use the same key names
+        as the wall_lift output so the rest of the pipeline (logger, plots)
+        does not have to special-case the schema.
+        """
+        # Locate button cap centre in world. We pre-compute once via a body
+        # name lookup so we don't re-scan every step.
+        button_top = self._spring_press_button_top()
+        eef_pos = self.get_eef_pos()
+        # Pose cost: drive EEF to the cap, with the press axis (z) handled
+        # by the force terms below — only XY distance enters here.
+        xy_err = float(np.linalg.norm(eef_pos[:2] - button_top[:2]))
+        pose_cost = xy_err ** 2
+
+        depth = self.get_button_depth()
+        k = self.get_button_stiffness()
+        f_n = k * depth
+        f_min = float(self.semantic_config.force_band.lower)
+        f_max = float(self.semantic_config.force_band.upper)
+        w_pose = float(weights.get("task_pose", 4.0))
+        w_lower = float(weights.get("force_lower", 0.0))
+        w_upper = float(weights.get("force_upper", 0.0))
+        w_energy = float(weights.get("energy", 0.0))
+        max_barrier = 500.0
+
+        force_lower = 0.0
+        force_upper = 0.0
+        if w_lower > 0 and f_min > 0:
+            force_lower = min(max_barrier, w_lower * max(0.0, f_min - f_n) ** 2)
+        if w_upper > 0 and f_max < 100:
+            force_upper = min(max_barrier, w_upper * max(0.0, f_n - f_max) ** 2)
+
+        # Interaction energy proxy: 0.5·k·d² (the spring's stored energy).
+        energy = w_energy * 0.5 * k * depth * depth
+
+        task_cost = w_pose * pose_cost
+        total = task_cost + energy + force_upper + force_lower
+        return {
+            "task": task_cost,
+            "energy": energy,
+            "force_upper": force_upper,
+            "force_lower": force_lower,
+            "sim_force_normal": f_n,
+            "eef_to_contact": xy_err,
+            "tilt_deg": 0.0,
+            "lateral_offset": float(eef_pos[0] - button_top[0]),
+            "height_term": 0.0,
+            "contact_term": 0.0,
+            "pose_term": pose_cost,
+            "tilt_term": 0.0,
+            "lateral_term": float((eef_pos[0] - button_top[0]) ** 2),
+            "button_depth": depth,
+            "button_stiffness": k,
+            "total": total,
+        }
+
+    def _spring_press_button_top(self) -> np.ndarray:
+        """World position of the button cap top, used as the EEF target."""
+        try:
+            bid = self.env.sim.model.body_name2id("spring_button_1_main")
+        except Exception:
+            return self.get_eef_pos()
+        pos = self.env.sim.data.body_xpos[bid].copy()
+        # Cap is a cylinder with size=(r=0.04, half_height=0.02), placed at
+        # local pos (0,0,0.02). The top surface is roughly at body_z + 0.04.
+        pos[2] = float(pos[2]) + 0.04
+        return pos

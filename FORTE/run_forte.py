@@ -178,6 +178,9 @@ class _ObservedPoseProvider:
         self._K = None
 
     def _gt_pose(self, real_env: Any, real_wrapper: ForteWrapper) -> np.ndarray:
+        if real_wrapper.box_body_id is None:
+            # spring_press has no free-joint object; the inner-world sync is a no-op.
+            return np.asarray([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         return np.concatenate(
             [
                 real_env.sim.data.body_xpos[real_wrapper.box_body_id],
@@ -586,13 +589,14 @@ def run_forte(
 
     # ---- Scene geometry + physics for VLM ----
     # Extract MuJoCo physics so VLM can reason about forces
-    box_body_id = real_wrapper.box_body_id
-    box_mass = float(real_env.sim.model.body_mass[box_body_id])
-    box_geom_id = real_wrapper.box_geom_id
-    box_friction = float(real_env.sim.model.geom_friction[box_geom_id, 0])
-    wall_body_id = real_wrapper.wall_body_id
-    wall_geom_id = real_wrapper.wall_geom_id
-    wall_friction = float(real_env.sim.model.geom_friction[wall_geom_id, 0])
+    box_mass = 0.0
+    box_friction = 0.0
+    wall_friction = 0.0
+    if real_wrapper.has_box:
+        box_mass = float(real_env.sim.model.body_mass[real_wrapper.box_body_id])
+        box_friction = float(real_env.sim.model.geom_friction[real_wrapper.box_geom_id, 0])
+    if real_wrapper.has_wall:
+        wall_friction = float(real_env.sim.model.geom_friction[real_wrapper.wall_geom_id, 0])
     effective_friction = max(box_friction, wall_friction)
 
     scene_info = {
@@ -615,6 +619,9 @@ def run_forte(
         "approx_max_force_per_axis_N": 7.5,
         "task_family": task_family,
     }
+    if task_family == "spring_press":
+        scene_info["button_stiffness_N_per_m"] = float(real_wrapper.get_button_stiffness())
+        scene_info["button_depth_init_m"] = float(real_wrapper.get_button_depth())
 
     # ---- Semantic initialization ----
     if use_vlm and not os.environ.get("OPENAI_API_KEY"):
@@ -794,40 +801,49 @@ def run_forte(
                 monitor.upper = float(semantic.active_config.force_band.upper)
 
             # 5) Contact-point hypotheses: propose -> filter -> rerank -> temporal select
-            selection_base = semantic.active_config.contact_strategy
-            best_hypothesis, ranked_hypotheses = _select_contact_hypothesis(
-                real_wrapper,
-                selection_base,
-                measured_force_normal=wall_normal_force,
-                force_band_lower=float(semantic.active_config.force_band.lower),
-                force_band_upper=float(semantic.active_config.force_band.upper),
-            )
-            selected_hypothesis = _temporal_contact_selection(
-                selector_state,
-                best_hypothesis,
-                ranked_hypotheses,
-                step=step,
-            )
+            # spring_press has no box/wall to choose between, so we skip the
+            # face-reselection loop entirely and keep the semantic strategy.
+            if task_family == "spring_press":
+                selected_hypothesis = ContactHypothesis(
+                    contact_strategy=semantic.active_config.contact_strategy,
+                    score=0.0, reason="spring_press_static",
+                )
+                ranked_hypotheses = [selected_hypothesis]
+            else:
+                selection_base = semantic.active_config.contact_strategy
+                best_hypothesis, ranked_hypotheses = _select_contact_hypothesis(
+                    real_wrapper,
+                    selection_base,
+                    measured_force_normal=wall_normal_force,
+                    force_band_lower=float(semantic.active_config.force_band.lower),
+                    force_band_upper=float(semantic.active_config.force_band.upper),
+                )
+                selected_hypothesis = _temporal_contact_selection(
+                    selector_state,
+                    best_hypothesis,
+                    ranked_hypotheses,
+                    step=step,
+                )
             semantic.active_config.contact_strategy = selected_hypothesis.contact_strategy
 
-            # Tracking-first fallback gate: if EEF cannot track selected target for
-            # sustained steps, temporarily recover face from geometry.
-            selected_cs = semantic.active_config.contact_strategy
-            desired_now = _desired_contact_from_strategy(real_wrapper, selected_cs)
-            tracking_error = float(np.linalg.norm(eef_pos - desired_now))
-            selector_state.tracking_error_ema = 0.9 * selector_state.tracking_error_ema + 0.1 * tracking_error
-            high_error = tracking_error > 0.09
-            selector_state.high_error_steps = selector_state.high_error_steps + 1 if high_error else 0
-            selector_state.fallback_active = selector_state.high_error_steps >= 8
-            selector_state.fallback_reason = (
-                "high_tracking_error"
-                if selector_state.fallback_active
-                else ""
-            )
-            if selector_state.fallback_active:
-                semantic.active_config.contact_strategy = _geometric_fallback_strategy(
-                    real_wrapper, semantic.active_config.contact_strategy
+            # Tracking-first fallback gate is wall_lift / force_hold specific.
+            if task_family != "spring_press":
+                selected_cs = semantic.active_config.contact_strategy
+                desired_now = _desired_contact_from_strategy(real_wrapper, selected_cs)
+                tracking_error = float(np.linalg.norm(eef_pos - desired_now))
+                selector_state.tracking_error_ema = 0.9 * selector_state.tracking_error_ema + 0.1 * tracking_error
+                high_error = tracking_error > 0.09
+                selector_state.high_error_steps = selector_state.high_error_steps + 1 if high_error else 0
+                selector_state.fallback_active = selector_state.high_error_steps >= 8
+                selector_state.fallback_reason = (
+                    "high_tracking_error"
+                    if selector_state.fallback_active
+                    else ""
                 )
+                if selector_state.fallback_active:
+                    semantic.active_config.contact_strategy = _geometric_fallback_strategy(
+                        real_wrapper, semantic.active_config.contact_strategy
+                    )
             selector_state.active_strategy = semantic.active_config.contact_strategy
 
             contact_belief = _update_contact_belief(
@@ -1118,7 +1134,25 @@ if __name__ == "__main__":
     p.add_argument("--samples", type=int, default=128)
     p.add_argument("--horizon", type=int, default=12)
     p.add_argument("--multiplier", type=float, default=10.0)
+    p.add_argument(
+        "--spring-stiffness",
+        type=float,
+        default=None,
+        help="(spring_press only) ground-truth k for the slide joint, N/m.",
+    )
+    p.add_argument(
+        "--spring-damping",
+        type=float,
+        default=None,
+        help="(spring_press only) damping for the slide joint, N·s/m.",
+    )
     args = p.parse_args()
+    # Stiffness must be visible to every spawned worker — env var is the
+    # cleanest channel across multiprocessing.spawn boundaries.
+    if args.spring_stiffness is not None:
+        os.environ["FORTE_SPRING_PRESS_STIFFNESS"] = str(args.spring_stiffness)
+    if args.spring_damping is not None:
+        os.environ["FORTE_SPRING_PRESS_DAMPING"] = str(args.spring_damping)
     task_name = args.task_name if args.task_name else DEMO_TASKS[args.demo]
     print(f"[FORTE] Running demo='{args.demo}' task='{task_name}'")
     run_forte(

@@ -6,6 +6,7 @@ Only external dependency: force_coral (LIBERO env + plugin registration).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -32,6 +33,11 @@ FORCE_HOLD_WALL_OVERRIDES = {
     "solref": "0.02 1",
     "solimp": "0.85 0.92 0.001",
 }
+
+# spring_press: ground-truth stiffness can be overridden via env var so
+# both the orchestrator and every spawned MPPI worker get the same value.
+SPRING_PRESS_STIFFNESS_ENV = "FORTE_SPRING_PRESS_STIFFNESS"
+SPRING_PRESS_DAMPING_ENV = "FORTE_SPRING_PRESS_DAMPING"
 
 # Some FORTE task families reuse an existing BDDL/init bundle (only the
 # runtime config differs). The alias is consulted both for BDDL lookup and
@@ -174,6 +180,16 @@ def build_inner_env(
             solimp=np.fromstring(FORCE_HOLD_WALL_OVERRIDES["solimp"], sep=" "),
         )
 
+    # spring_press: stiffness/damping live in an env var so workers see them.
+    if task_family == "spring_press":
+        k = os.environ.get(SPRING_PRESS_STIFFNESS_ENV)
+        d = os.environ.get(SPRING_PRESS_DAMPING_ENV)
+        _patch_slide_joint_stiffness(
+            env, "button_z",
+            stiffness=float(k) if k else None,
+            damping=float(d) if d else None,
+        )
+
     return env
 
 
@@ -206,19 +222,34 @@ class ObjectCentricWrapper:
         self.contact_vertical_offset_scale = float(contact_vertical_offset_scale)
         self._contact_world_offset: Optional[np.ndarray] = None
 
-        self.box_body_id = env.sim.model.body_name2id(box_body_name)
-        self.wall_body_id = env.sim.model.body_name2id(wall_body_name)
-        self.box_geom_id = self._select_collision_geom_id(self.box_body_id)
-        self.wall_geom_id = self._select_collision_geom_id(self.wall_body_id)
-        self.box_half_extents = np.array(
-            env.sim.model.geom_size[self.box_geom_id],
-            dtype=np.float64,
-        )
-        self.wall_half_extents = np.array(
-            env.sim.model.geom_size[self.wall_geom_id],
-            dtype=np.float64,
-        )
+        self.box_body_id = self._safe_body_id(env, box_body_name)
+        self.wall_body_id = self._safe_body_id(env, wall_body_name)
+        if self.box_body_id is not None:
+            self.box_geom_id = self._select_collision_geom_id(self.box_body_id)
+            self.box_half_extents = np.array(
+                env.sim.model.geom_size[self.box_geom_id], dtype=np.float64,
+            )
+        else:
+            self.box_geom_id = None
+            self.box_half_extents = np.zeros(3, dtype=np.float64)
+        if self.wall_body_id is not None:
+            self.wall_geom_id = self._select_collision_geom_id(self.wall_body_id)
+            self.wall_half_extents = np.array(
+                env.sim.model.geom_size[self.wall_geom_id], dtype=np.float64,
+            )
+        else:
+            self.wall_geom_id = None
+            self.wall_half_extents = np.zeros(3, dtype=np.float64)
         self._sync_warned = False
+
+    @staticmethod
+    def _safe_body_id(env: SegmentationRenderEnv, name: str) -> Optional[int]:
+        """Return body id or None if the named body is absent (e.g. spring_press
+        scene has no box/wall)."""
+        try:
+            return int(env.sim.model.body_name2id(name))
+        except Exception:
+            return None
 
     def _select_collision_geom_id(self, body_id: int) -> int:
         """Pick a collision geom for a body (prefer contype/conaffinity-enabled geoms)."""
@@ -248,16 +279,24 @@ class ObjectCentricWrapper:
         return self.get_box_pos()
 
     def get_box_pos(self) -> np.ndarray:
+        if self.box_body_id is None:
+            return np.zeros(3, dtype=np.float64)
         return self.env.sim.data.body_xpos[self.box_body_id].copy()
 
     def get_box_quat(self) -> np.ndarray:
+        if self.box_body_id is None:
+            return np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         return self.env.sim.data.body_xquat[self.box_body_id].copy()
 
     def get_box_rotmat(self) -> np.ndarray:
+        if self.box_body_id is None:
+            return np.eye(3, dtype=np.float64)
         return self.env.sim.data.body_xmat[self.box_body_id].reshape(3, 3).copy()
 
     def get_box_top_height(self) -> float:
         """Top of oriented box along world z-axis."""
+        if self.box_body_id is None:
+            return 0.0
         rotmat = self.get_box_rotmat()
         z_extent = float(np.abs(rotmat[2, :]) @ self.box_half_extents)
         return float(self.get_box_pos()[2] + z_extent)
@@ -267,9 +306,13 @@ class ObjectCentricWrapper:
         return self.env.sim.data.site_xpos[sid].copy()
 
     def get_wall_pos(self) -> np.ndarray:
+        if self.wall_geom_id is None:
+            return np.zeros(3, dtype=np.float64)
         return self.env.sim.data.geom_xpos[self.wall_geom_id].copy()
 
     def get_wall_rotmat(self) -> np.ndarray:
+        if self.wall_geom_id is None:
+            return np.eye(3, dtype=np.float64)
         return self.env.sim.data.geom_xmat[self.wall_geom_id].reshape(3, 3).copy()
 
     def get_contact_anchor_world(self) -> np.ndarray:
@@ -337,8 +380,13 @@ class ObjectCentricWrapper:
                 self._sync_warned = True
 
     def sync_box_from_real(self, real_env: Any) -> None:
+        if self.box_body_id is None:
+            return
         joint_name = "block_1_joint0"
-        qpos_addr, _ = self.env.sim.model.get_joint_qpos_addr(joint_name)
+        try:
+            qpos_addr, _ = self.env.sim.model.get_joint_qpos_addr(joint_name)
+        except (ValueError, KeyError):
+            return
         pose = np.concatenate([
             real_env.sim.data.body_xpos[self.box_body_id],
             real_env.sim.data.body_xquat[self.box_body_id],
@@ -347,10 +395,15 @@ class ObjectCentricWrapper:
 
     def update_inner_from_pose(self, pose: np.ndarray, size: Optional[np.ndarray] = None) -> None:
         """Apply observed object pose to inner world (CoRAL-style dual-world sync)."""
+        if self.box_body_id is None:
+            return  # spring_press has no free-joint object to sync
         joint_name = "block_1_joint0"
-        qpos_addr, _ = self.env.sim.model.get_joint_qpos_addr(joint_name)
+        try:
+            qpos_addr, _ = self.env.sim.model.get_joint_qpos_addr(joint_name)
+        except (ValueError, KeyError):
+            return
         self.env.sim.data.qpos[qpos_addr: qpos_addr + 7] = np.asarray(pose, dtype=np.float64)
-        if size is not None:
+        if size is not None and self.box_geom_id is not None:
             geom_id = self.box_geom_id
             self.env.sim.model.geom_size[geom_id] = np.asarray(size, dtype=np.float64)
             self.box_half_extents = np.asarray(size, dtype=np.float64)
